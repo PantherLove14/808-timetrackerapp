@@ -1,12 +1,14 @@
 import { useEffect, useState, useRef } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import { supabase, logAudit } from '../lib/supabase';
 import PageHeader, { SectionTitle, Empty } from '../components/PageHeader';
+import { useToast } from '../components/BusinessSelector';
+import { getBusinessColor, businessDot } from '../lib/businessColor';
 import { formatDateTime } from '../lib/format';
 
 export default function TaskDetailPage({ role, profile }) {
   const { taskId } = useParams();
-  const nav = useNavigate();
+  const toast = useToast();
   const [task, setTask] = useState(null);
   const [comments, setComments] = useState([]);
   const [attachments, setAttachments] = useState([]);
@@ -20,55 +22,45 @@ export default function TaskDetailPage({ role, profile }) {
   async function load() {
     const { data: t } = await supabase
       .from('tasks')
-      .select('*, businesses(name, client_id), users!tasks_assignee_id_fkey(name)')
+      .select('*, businesses(name, client_id, clients(name)), users!tasks_assignee_id_fkey(name)')
       .eq('id', taskId).single();
     setTask(t);
 
-    const { data: c } = await supabase
-      .from('task_comments')
-      .select('*')
-      .eq('task_id', taskId)
-      .order('created_at', { ascending: true });
+    const { data: c } = await supabase.from('task_comments').select('*').eq('task_id', taskId).order('created_at', { ascending: true });
     setComments(c || []);
 
-    const { data: a } = await supabase
-      .from('task_attachments')
-      .select('*')
-      .eq('task_id', taskId)
-      .order('created_at', { ascending: false });
+    const { data: a } = await supabase.from('task_attachments').select('*').eq('task_id', taskId).order('created_at', { ascending: false });
     setAttachments(a || []);
   }
 
   async function uploadFile(file, isAudio = false) {
     if (!file) return;
-    if (file.size > 100 * 1024 * 1024) { alert('Max file size is 100MB.'); return; }
+    if (file.size > 100 * 1024 * 1024) { toast.show('Max file size is 100MB.', 'error'); return; }
     setUploading(true);
     const { data: { user } } = await supabase.auth.getUser();
     const ext = file.name.split('.').pop();
     const path = `tasks/${taskId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
     const { error: upErr } = await supabase.storage.from('task-attachments').upload(path, file);
-    if (upErr) { setUploading(false); return alert('Upload failed: ' + upErr.message); }
+    if (upErr) { setUploading(false); toast.show('Upload failed: ' + upErr.message, 'error'); return; }
 
     if (isAudio) {
       await supabase.from('tasks').update({ audio_instruction_url: path }).eq('id', taskId);
     } else {
       await supabase.from('task_attachments').insert({
-        task_id: taskId,
-        uploaded_by: user.id,
-        file_name: file.name,
-        file_path: path,
-        file_size: file.size,
-        mime_type: file.type
+        task_id: taskId, uploaded_by: user.id,
+        file_name: file.name, file_path: path,
+        file_size: file.size, mime_type: file.type
       });
     }
     await logAudit('task.attachment_add', 'task', taskId, { file_name: file.name });
+    toast.show(isAudio ? 'Audio instruction uploaded.' : `${file.name} attached.`);
     setUploading(false);
     load();
   }
 
   async function downloadFile(path, name) {
     const { data, error } = await supabase.storage.from('task-attachments').createSignedUrl(path, 60);
-    if (error) return alert('Download failed: ' + error.message);
+    if (error) return toast.show('Download failed: ' + error.message, 'error');
     window.open(data.signedUrl, '_blank');
   }
 
@@ -76,14 +68,16 @@ export default function TaskDetailPage({ role, profile }) {
     if (!newComment.trim()) return;
     const { data: { user } } = await supabase.auth.getUser();
     const { error } = await supabase.from('task_comments').insert({
-      task_id: taskId,
-      author_id: user.id,
-      author_name: profile.name,
-      author_role: role,
+      task_id: taskId, author_id: user.id,
+      author_name: profile.name, author_role: role === 'otm' ? 'va' : role,
       body: newComment.trim()
     });
-    if (error) return alert(error.message);
+    if (error) return toast.show(error.message, 'error');
     await logAudit('task.comment', 'task', taskId);
+    const recipient = role === 'client'
+      ? (task.users?.name || 'the OTM')
+      : (task.businesses?.clients?.name || 'the client');
+    toast.show(`Comment posted on ${task.businesses?.name}. ${recipient} will see it.`);
     setNewComment('');
     load();
   }
@@ -97,14 +91,23 @@ export default function TaskDetailPage({ role, profile }) {
       patch.revision_count = (task.revision_count || 0) + 1;
     }
     const { error } = await supabase.from('tasks').update(patch).eq('id', taskId);
-    if (error) return alert(error.message);
+    if (error) return toast.show(error.message, 'error');
     await logAudit(`task.status_${newStatus}`, 'task', taskId, { reason });
+
+    if (newStatus === 'submitted') {
+      const clientName = task.businesses?.clients?.name || 'the client';
+      toast.show(`"${task.title}" submitted to ${clientName} (${task.businesses?.name}).`);
+    } else if (newStatus === 'approved') {
+      toast.show(`"${task.title}" approved.`);
+    } else if (newStatus === 'revision_requested') {
+      toast.show(`Revision requested. ${task.users?.name || 'The OTM'} will be notified.`);
+    } else {
+      toast.show(`Status changed to ${newStatus.replace('_', ' ')}.`);
+    }
     load();
   }
 
-  async function approve() {
-    await changeStatus('approved');
-  }
+  async function approve() { await changeStatus('approved'); }
   async function requestRevision() {
     const reason = prompt('What revision is needed?');
     if (!reason) return;
@@ -114,25 +117,31 @@ export default function TaskDetailPage({ role, profile }) {
   if (!task) return <div className="text-center py-20 text-muted">Loading…</div>;
 
   const statusLabel = {
-    todo: 'To Do',
-    in_progress: 'In Progress',
-    submitted: 'Submitted for Review',
-    approved: 'Approved',
+    todo: 'To Do', in_progress: 'In Progress',
+    submitted: 'Submitted for Review', approved: 'Approved',
     revision_requested: 'Revision Requested'
   }[task.status];
 
   const statusBadge = {
-    todo: 'done',
-    in_progress: 'pending',
-    submitted: 'pending',
-    approved: 'active',
-    revision_requested: 'hold'
+    todo: 'done', in_progress: 'pending', submitted: 'pending',
+    approved: 'active', revision_requested: 'hold'
   }[task.status];
+
+  const color = getBusinessColor(task.business_id);
+  const isOTM = role === 'va' || role === 'otm';
 
   return (
     <div>
       <div className="mb-4">
         <Link to="/tasks" className="text-crimson text-sm hover:underline">← Back to tasks</Link>
+      </div>
+
+      {/* Business breadcrumb */}
+      <div className="flex items-center gap-2 mb-3 text-sm">
+        <span style={businessDot(task.business_id)} />
+        <span className="font-bebas tracking-widest text-xs" style={{ color: color.hex }}>{task.businesses?.name}</span>
+        <span className="text-muted">/</span>
+        <span className="text-slate808 truncate">{task.title}</span>
       </div>
 
       <PageHeader
@@ -142,8 +151,7 @@ export default function TaskDetailPage({ role, profile }) {
         right={<span className={`badge ${statusBadge}`}>{statusLabel}</span>}
       />
 
-      {/* Status action bar */}
-      <div className="panel mb-6">
+      <div className="panel mb-6" style={{ borderLeft: `4px solid ${color.hex}` }}>
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
             <div className="font-bebas text-[11px] tracking-widest text-crimson">STATUS</div>
@@ -153,7 +161,7 @@ export default function TaskDetailPage({ role, profile }) {
             )}
           </div>
           <div className="flex gap-2 flex-wrap">
-            {role === 'va' && task.assignee_id === profile?.id && (
+            {isOTM && task.assignee_id === profile?.id && (
               <>
                 {task.status === 'todo' && <button className="btn-sm ink" onClick={() => changeStatus('in_progress')}>START</button>}
                 {task.status === 'in_progress' && <button className="btn-sm ink" onClick={() => changeStatus('submitted')}>SUBMIT FOR REVIEW</button>}
@@ -176,7 +184,6 @@ export default function TaskDetailPage({ role, profile }) {
         </div>
       </div>
 
-      {/* Description */}
       {task.description && (
         <div className="panel mb-6">
           <SectionTitle kicker="Instructions">Description</SectionTitle>
@@ -184,7 +191,6 @@ export default function TaskDetailPage({ role, profile }) {
         </div>
       )}
 
-      {/* Audio instructions */}
       <div className="panel mb-6">
         <div className="flex justify-between items-start mb-3">
           <SectionTitle kicker="Listen">Audio instructions</SectionTitle>
@@ -198,32 +204,23 @@ export default function TaskDetailPage({ role, profile }) {
             </>
           )}
         </div>
-        {task.audio_instruction_url ? (
-          <AudioPlayer path={task.audio_instruction_url} />
-        ) : (
+        {task.audio_instruction_url ? <AudioPlayer path={task.audio_instruction_url} /> : (
           <div className="text-muted text-sm italic">No audio instructions.</div>
         )}
       </div>
 
-      {/* Attachments */}
       <div className="panel mb-6">
         <div className="flex justify-between items-start mb-3">
           <SectionTitle kicker="Files">Attachments</SectionTitle>
-          <>
-            <input type="file" ref={fileInputRef} style={{ display: 'none' }}
-              onChange={e => e.target.files[0] && uploadFile(e.target.files[0])} />
-            <button className="btn-sm ink" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-              {uploading ? 'UPLOADING…' : '+ UPLOAD FILE'}
-            </button>
-          </>
+          <input type="file" ref={fileInputRef} style={{ display: 'none' }}
+            onChange={e => e.target.files[0] && uploadFile(e.target.files[0])} />
+          <button className="btn-sm ink" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+            {uploading ? 'UPLOADING…' : '+ UPLOAD FILE'}
+          </button>
         </div>
-        {attachments.length === 0 ? (
-          <Empty>No attachments yet.</Empty>
-        ) : (
+        {attachments.length === 0 ? <Empty>No attachments yet.</Empty> : (
           <table>
-            <thead>
-              <tr><th>File</th><th>Uploaded</th><th>Size</th><th></th></tr>
-            </thead>
+            <thead><tr><th>File</th><th>Uploaded</th><th>Size</th><th></th></tr></thead>
             <tbody>
               {attachments.map(a => (
                 <tr key={a.id}>
@@ -238,17 +235,14 @@ export default function TaskDetailPage({ role, profile }) {
         )}
       </div>
 
-      {/* Comments */}
       <div className="panel">
         <SectionTitle kicker="Communication">Comments</SectionTitle>
         <div className="space-y-3 mb-4">
-          {comments.length === 0 ? (
-            <Empty>No comments yet. Start the conversation below.</Empty>
-          ) : comments.map(c => (
+          {comments.length === 0 ? <Empty>No comments yet. Start the conversation below.</Empty> : comments.map(c => (
             <div key={c.id} className="border-l-2 border-line pl-4 py-1">
               <div className="flex items-baseline gap-2 flex-wrap">
                 <strong className="text-sm">{c.author_name}</strong>
-                <span className="badge ink text-[9px]">{c.author_role.toUpperCase()}</span>
+                <span className="badge ink text-[9px]">{c.author_role === 'va' ? 'OTM' : c.author_role.toUpperCase()}</span>
                 <span className="text-xs text-muted">{formatDateTime(c.created_at)}</span>
               </div>
               <div className="text-sm text-ink mt-1 whitespace-pre-wrap">{c.body}</div>
@@ -256,13 +250,7 @@ export default function TaskDetailPage({ role, profile }) {
           ))}
         </div>
         <div className="pt-4 border-t border-line-soft">
-          <textarea
-            className="input"
-            rows="3"
-            value={newComment}
-            onChange={e => setNewComment(e.target.value)}
-            placeholder="Write a comment..."
-          />
+          <textarea className="input" rows="3" value={newComment} onChange={e => setNewComment(e.target.value)} placeholder="Write a comment..." />
           <div className="flex justify-end mt-2">
             <button className="btn-sm ink" onClick={postComment} disabled={!newComment.trim()}>POST COMMENT</button>
           </div>

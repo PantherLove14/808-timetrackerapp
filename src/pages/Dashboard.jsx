@@ -2,12 +2,14 @@ import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import PageHeader, { StatCard, SectionTitle, Empty } from '../components/PageHeader';
 import RetainerCard from '../components/RetainerCard';
+import { useBusinesses } from '../components/BusinessSelector';
+import { businessDot } from '../lib/businessColor';
 import { formatDuration, formatDate, startOfWeek, startOfMonth, sameDay } from '../lib/format';
 
 export default function Dashboard({ role, profile }) {
+  const { businesses, selected, selectedId } = useBusinesses();
   const [stats, setStats] = useState(null);
   const [recent, setRecent] = useState([]);
-  const [businesses, setBusinesses] = useState([]);
 
   useEffect(() => {
     async function load() {
@@ -15,15 +17,10 @@ export default function Dashboard({ role, profile }) {
       const som = startOfMonth(now).toISOString();
       const sow = startOfWeek(now).toISOString();
 
-      // Load businesses relevant to this user
-      let bq = supabase.from('businesses').select('*').eq('active', true).order('name');
-      if (role === 'client' && profile) bq = bq.eq('client_id', profile.id);
-      const { data: biz } = await bq;
-      setBusinesses(biz || []);
-
-      // Time entries
       let eq = supabase.from('time_entries').select('*, businesses(name), users(name)');
-      if (role === 'va' && profile) eq = eq.eq('user_id', profile.id);
+      if (role === 'va' || role === 'otm') { if (profile) eq = eq.eq('user_id', profile.id); }
+      if (selectedId !== 'all') eq = eq.eq('business_id', selectedId);
+
       const { data: entries } = await eq.order('date', { ascending: false }).limit(500);
       const all = entries || [];
 
@@ -31,9 +28,8 @@ export default function Dashboard({ role, profile }) {
       const weekSec = all.filter(e => new Date(e.date) >= new Date(sow)).reduce((s, e) => s + e.duration, 0);
       const todaySec = all.filter(e => sameDay(new Date(e.date), now)).reduce((s, e) => s + e.duration, 0);
 
-      // Role-specific stats
       if (role === 'admin' || role === 'sub_admin') {
-        const [{ count: activeClients }, { count: activeVAs }] = await Promise.all([
+        const [{ count: activeClients }, { count: activeOTMs }] = await Promise.all([
           supabase.from('clients').select('id', { count: 'exact', head: true }).eq('active', true),
           supabase.from('users').select('id', { count: 'exact', head: true }).eq('role', 'va').eq('active', true)
         ]);
@@ -42,12 +38,14 @@ export default function Dashboard({ role, profile }) {
           cards: [
             { kicker: 'Week', value: formatDuration(weekSec), sub: 'This week' },
             { kicker: 'Active Clients', value: activeClients || 0, sub: 'On retainer' },
-            { kicker: 'Active VAs', value: activeVAs || 0, sub: 'On the team' }
+            { kicker: 'Active OTMs', value: activeOTMs || 0, sub: 'On the team' }
           ]
         });
-      } else if (role === 'va') {
-        const { count: openTasks } = await supabase.from('tasks').select('id', { count: 'exact', head: true })
+      } else if (role === 'va' || role === 'otm') {
+        let openTasksQ = supabase.from('tasks').select('id', { count: 'exact', head: true })
           .eq('assignee_id', profile.id).in('status', ['todo', 'in_progress', 'revision_requested']);
+        if (selectedId !== 'all') openTasksQ = openTasksQ.eq('business_id', selectedId);
+        const { count: openTasks } = await openTasksQ;
         setStats({
           primary: { kicker: 'Today', value: formatDuration(todaySec), sub: 'Hours logged' },
           cards: [
@@ -57,12 +55,11 @@ export default function Dashboard({ role, profile }) {
           ]
         });
       } else {
-        // client
         setStats({
           primary: { kicker: 'Month', value: formatDuration(monthSec), sub: 'Retainer hours used' },
           cards: [
             { kicker: 'Week', value: formatDuration(weekSec), sub: 'This week' },
-            { kicker: 'Businesses', value: (biz || []).length, sub: 'Under retainer' }
+            { kicker: 'Businesses', value: businesses.length, sub: 'Under retainer' }
           ]
         });
       }
@@ -70,14 +67,16 @@ export default function Dashboard({ role, profile }) {
       setRecent(all.slice(0, 10));
     }
     load();
-  }, [role, profile]);
+  }, [role, profile, selectedId, businesses.length]);
 
   const subtitle =
     role === 'admin' || role === 'sub_admin'
       ? "Your portfolio at a glance."
-      : role === 'va'
-      ? 'Your time, tasks, and recent work.'
-      : 'Your retainer status and recent work delivered.';
+      : role === 'va' || role === 'otm'
+      ? (selected ? `Your work on ${selected.name}.` : 'Your time, tasks, and recent work across all businesses.')
+      : (selected ? `Overview for ${selected.name}.` : 'Your retainer status and recent work across all businesses.');
+
+  const showRetainers = (role === 'admin' || role === 'sub_admin' || role === 'client') && businesses.length > 0;
 
   return (
     <div>
@@ -92,11 +91,20 @@ export default function Dashboard({ role, profile }) {
         </div>
       )}
 
-      {businesses.length > 0 && (role === 'admin' || role === 'sub_admin' || role === 'client') && (
+      {showRetainers && selectedId === 'all' && (
         <div className="panel mb-8">
-          <SectionTitle kicker="This month">Retainer status</SectionTitle>
+          <SectionTitle kicker="This month">Retainer status — all businesses</SectionTitle>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 mt-4">
             {businesses.map(b => <RetainerCard key={b.id} business={b} />)}
+          </div>
+        </div>
+      )}
+
+      {showRetainers && selected && (
+        <div className="panel mb-8">
+          <SectionTitle kicker="This month">Retainer status — {selected.name}</SectionTitle>
+          <div className="mt-4">
+            <RetainerCard business={selected} />
           </div>
         </div>
       )}
@@ -109,7 +117,7 @@ export default function Dashboard({ role, profile }) {
           <table>
             <thead>
               <tr>
-                {role !== 'va' && <th>VA</th>}
+                {role !== 'va' && role !== 'otm' && <th>OTM</th>}
                 {role !== 'client' && <th>Business</th>}
                 <th>Date</th>
                 <th>Description</th>
@@ -119,8 +127,10 @@ export default function Dashboard({ role, profile }) {
             <tbody>
               {recent.map(e => (
                 <tr key={e.id}>
-                  {role !== 'va' && <td>{e.users?.name || '—'}</td>}
-                  {role !== 'client' && <td>{e.businesses?.name || '—'}</td>}
+                  {role !== 'va' && role !== 'otm' && <td>{e.users?.name || '—'}</td>}
+                  {role !== 'client' && (
+                    <td><span className="inline-flex items-center gap-2"><span style={businessDot(e.business_id)} />{e.businesses?.name || '—'}</span></td>
+                  )}
                   <td>{formatDate(e.date)}</td>
                   <td className="text-slate808">
                     {e.description}

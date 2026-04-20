@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { signOut } from '../hooks/useAuth';
 import { supabase } from '../lib/supabase';
+import { BRAND } from '../lib/constants';
 import Logo from './Logo';
+import { BusinessHeaderBar } from './BusinessSelector';
 
 export default function Shell({ children, role, profile }) {
   const loc = useLocation();
@@ -19,7 +21,11 @@ export default function Shell({ children, role, profile }) {
   const tabs = buildTabs(role, pendingRequests);
   const initial = (profile?.name || 'U').charAt(0).toUpperCase();
   const isAdmin = role === 'admin' || role === 'sub_admin';
-  const displayRole = role === 'sub_admin' ? 'SUB-ADMIN' : (role || '').toUpperCase();
+  const displayRole =
+    role === 'sub_admin' ? 'SUB-ADMIN' :
+    role === 'admin' ? 'ADMIN' :
+    role === 'va' || role === 'otm' ? 'OTM' :
+    role === 'client' ? 'CLIENT' : (role || '').toUpperCase();
 
   async function handleLogout() {
     await signOut();
@@ -28,7 +34,6 @@ export default function Shell({ children, role, profile }) {
 
   return (
     <div className="min-h-screen flex flex-col">
-      {/* Topbar */}
       <header
         className="flex items-center justify-between px-8 py-4 sticky top-0 z-40"
         style={{ background: 'var(--paper)', borderBottom: '1px solid var(--line)' }}
@@ -37,7 +42,7 @@ export default function Shell({ children, role, profile }) {
           <Logo size={38} />
           <div>
             <div className="font-bebas text-xl tracking-widest text-ink leading-none">808 TALENT SOURCE</div>
-            <div className="font-display italic text-xs text-slate808">Time Tracker</div>
+            <div className="font-display italic text-xs text-slate808">Time Tracker & Operations</div>
           </div>
         </div>
 
@@ -55,7 +60,6 @@ export default function Shell({ children, role, profile }) {
         </div>
       </header>
 
-      {/* Nav tabs */}
       <nav className="flex gap-1 px-8 overflow-x-auto" style={{ background: 'var(--paper)', borderBottom: '1px solid var(--line)' }}>
         {tabs.map(t => (
           <NavLink
@@ -63,9 +67,7 @@ export default function Shell({ children, role, profile }) {
             to={t.path}
             className={({ isActive }) =>
               `px-5 py-3.5 font-bebas text-xs tracking-widest whitespace-nowrap border-b-2 transition-colors ${
-                isActive
-                  ? 'text-crimson border-crimson'
-                  : 'text-slate808 border-transparent hover:text-ink'
+                isActive ? 'text-crimson border-crimson' : 'text-slate808 border-transparent hover:text-ink'
               }`
             }
           >
@@ -77,27 +79,32 @@ export default function Shell({ children, role, profile }) {
         ))}
       </nav>
 
-      {/* Content */}
-      <main className="flex-1 max-w-[1400px] mx-auto w-full px-8 py-10">
+      {/* Business header bar appears here for clients and OTMs */}
+      <BusinessHeaderBar role={role} />
+
+      <main className="flex-1 max-w-[1400px] mx-auto w-full px-8 py-4">
         {children}
       </main>
 
-      {/* Footer */}
       <footer className="mt-12 border-t border-line" style={{ background: 'var(--paper)' }}>
         <div className="max-w-[1400px] mx-auto px-8 py-8">
           <div className="flex flex-wrap items-start justify-between gap-6">
             <div className="max-w-lg">
               <div className="font-bebas tracking-widest text-ink text-sm">808 TALENT SOURCE™</div>
-              <div className="font-display italic text-slate808 text-sm mt-1">A brand of Impctrs Management Group</div>
+              <div className="font-display italic text-slate808 text-sm mt-1">A brand of {BRAND.parentCompany}</div>
               <div className="text-xs text-muted mt-3 leading-relaxed">
-                © 2026 808 Talent Source, LLC. All rights reserved. Incorporated in Florida. Serving businesses nationwide. 866-808-1994
+                © 2026 {BRAND.companyName}. All rights reserved. Incorporated in Florida. Serving businesses nationwide.
+              </div>
+              <div className="text-xs text-muted mt-2 leading-relaxed">
+                {BRAND.addressLine1} • {BRAND.addressLine2}<br />
+                {BRAND.phone} • <a href={`mailto:${BRAND.email}`} className="hover:text-crimson">{BRAND.email}</a>
               </div>
             </div>
             <div className="flex flex-wrap gap-6 text-xs">
-              <a href="https://808talentsource.com/privacy-policy" target="_blank" rel="noreferrer" className="text-slate808 hover:text-crimson">Privacy Policy</a>
-              <a href="https://808talentsource.com/terms-of-service" target="_blank" rel="noreferrer" className="text-slate808 hover:text-crimson">Terms of Service</a>
-              <a href="https://808talentsource.com/acceptable-use" target="_blank" rel="noreferrer" className="text-slate808 hover:text-crimson">Acceptable Use</a>
-              <a href="https://808talentsource.com/contact" target="_blank" rel="noreferrer" className="text-slate808 hover:text-crimson">Contact</a>
+              <a href={BRAND.privacyUrl} target="_blank" rel="noreferrer" className="text-slate808 hover:text-crimson">Privacy Policy</a>
+              <a href={BRAND.termsUrl} target="_blank" rel="noreferrer" className="text-slate808 hover:text-crimson">Terms of Service</a>
+              <a href={BRAND.acceptableUseUrl} target="_blank" rel="noreferrer" className="text-slate808 hover:text-crimson">Acceptable Use</a>
+              <a href={`https://${BRAND.website}`} target="_blank" rel="noreferrer" className="text-slate808 hover:text-crimson">{BRAND.website}</a>
             </div>
           </div>
           <div className="mt-6 pt-4 border-t border-line-soft text-[11px] text-muted leading-relaxed">
@@ -116,7 +123,7 @@ function buildTabs(role, pendingRequests) {
       { path: '/clients', label: 'Clients' },
       { path: '/timesheets', label: 'Timesheets' },
       { path: '/summary', label: 'Weekly Summary' },
-      { path: '/admin/team', label: 'Team' },
+      { path: '/admin/team', label: 'OTM Team' },
       { path: '/admin/clients', label: 'Client Admin' },
       { path: '/admin/pay', label: 'Pay & Stubs' },
       { path: '/admin/requests', label: 'Requests', count: pendingRequests },
@@ -125,7 +132,7 @@ function buildTabs(role, pendingRequests) {
       { path: '/admin/audit', label: 'Audit Log' }
     ];
   }
-  if (role === 'va') {
+  if (role === 'va' || role === 'otm') {
     return [
       { path: '/dashboard', label: 'Dashboard' },
       { path: '/tracker', label: 'Time Tracker' },
@@ -133,7 +140,6 @@ function buildTabs(role, pendingRequests) {
       { path: '/timesheets', label: 'My Timesheets' }
     ];
   }
-  // client
   return [
     { path: '/dashboard', label: 'Dashboard' },
     { path: '/clients', label: 'My Retainer' },

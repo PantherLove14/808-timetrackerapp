@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { signIn } from '../hooks/useAuth';
 import Logo from '../components/Logo';
+import { BRAND } from '../lib/constants';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -39,27 +40,13 @@ export default function LoginPage() {
           <form onSubmit={handleSubmit}>
             <div className="mb-4">
               <label className="field-label">Email</label>
-              <input
-                className="input"
-                type="email"
-                placeholder="you@example.com"
-                autoComplete="username"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                required
-              />
+              <input className="input" type="email" placeholder="you@example.com" autoComplete="username"
+                value={email} onChange={e => setEmail(e.target.value)} required />
             </div>
             <div className="mb-4">
               <label className="field-label">Password</label>
-              <input
-                className="input"
-                type="password"
-                placeholder="Your password"
-                autoComplete="current-password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                required
-              />
+              <input className="input" type="password" placeholder="Your password" autoComplete="current-password"
+                value={password} onChange={e => setPassword(e.target.value)} required />
             </div>
 
             {error && (
@@ -74,15 +61,15 @@ export default function LoginPage() {
           </form>
 
           <div className="mt-5 pt-4 border-t border-line-soft text-xs text-muted leading-relaxed">
-            This system is confidential and proprietary to 808 Talent Source, LLC. Unauthorized access is prohibited and monitored. All activity is logged.
+            This system is confidential and proprietary to {BRAND.companyName}. Unauthorized access is prohibited and monitored. All activity is logged.
           </div>
           <div className="mt-3 text-xs text-muted text-center">
-            Forgot your password? Contact your 808 administrator.
+            Forgot your password? Contact <a href={`mailto:${BRAND.email}`} className="text-crimson hover:underline">{BRAND.email}</a> or call {BRAND.phone}.
           </div>
         </div>
 
         <div className="text-center mt-6 text-xs text-muted">
-          © 2026 808 Talent Source, LLC. A brand of Impctrs Management Group. All rights reserved.
+          © 2026 {BRAND.companyName}. A brand of {BRAND.parentCompany}. All rights reserved.
         </div>
       </div>
     </div>

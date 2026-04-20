@@ -49,7 +49,8 @@ export default function AuditLogPage() {
       <div className="flex gap-2 mb-4">
         <select value={filter} onChange={e => setFilter(e.target.value)}>
           <option value="all">All actions</option>
-          <option value="user">User actions</option>
+          <option value="user">OTM/team actions</option>
+          <option value="otm_credential">OTM credentials</option>
           <option value="client">Client actions</option>
           <option value="business">Business actions</option>
           <option value="time_entry">Time entries</option>

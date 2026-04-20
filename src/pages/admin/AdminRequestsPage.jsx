@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { supabase, logAudit } from '../../lib/supabase';
 import PageHeader, { SectionTitle, Empty } from '../../components/PageHeader';
+import { useToast } from '../../components/BusinessSelector';
 import { formatDate } from '../../lib/format';
 
 export default function AdminRequestsPage() {
   const [requests, setRequests] = useState([]);
+  const toast = useToast();
 
   useEffect(() => { load(); }, []);
 
@@ -17,18 +19,17 @@ export default function AdminRequestsPage() {
   }
 
   async function review(id, status) {
-    const notes = status === 'denied' ? prompt('Reason for denial (visible to VA)?') : null;
+    const notes = status === 'denied' ? prompt('Reason for denial (visible to OTM)?') : null;
     if (status === 'denied' && !notes) return;
     const { data: { user } } = await supabase.auth.getUser();
     const { data: me } = await supabase.from('users').select('id').eq('id', user.id).single();
     const { error } = await supabase.from('time_off').update({
-      status,
-      reviewed_by: me?.id,
-      reviewed_at: new Date().toISOString(),
-      review_notes: notes
+      status, reviewed_by: me?.id,
+      reviewed_at: new Date().toISOString(), review_notes: notes
     }).eq('id', id);
-    if (error) return alert(error.message);
+    if (error) return toast.show(error.message, 'error');
     await logAudit(`time_off.${status}`, 'time_off', id, { notes });
+    toast.show(`Request ${status}.`);
     load();
   }
 
@@ -37,21 +38,13 @@ export default function AdminRequestsPage() {
 
   return (
     <div>
-      <PageHeader
-        kicker="Admin"
-        title="Requests"
-        subtitle="Review time off requests from your team."
-      />
+      <PageHeader kicker="Admin" title="Requests" subtitle="Review time off requests from your OTM team." />
 
       <div className="panel mb-6">
         <SectionTitle kicker="Pending">Awaiting your review</SectionTitle>
-        {pending.length === 0 ? (
-          <Empty>No pending requests.</Empty>
-        ) : (
+        {pending.length === 0 ? <Empty>No pending requests.</Empty> : (
           <table>
-            <thead>
-              <tr><th>VA</th><th>Type</th><th>Dates</th><th>Reason</th><th>Submitted</th><th>Action</th></tr>
-            </thead>
+            <thead><tr><th>OTM</th><th>Type</th><th>Dates</th><th>Reason</th><th>Submitted</th><th>Action</th></tr></thead>
             <tbody>
               {pending.map(r => (
                 <tr key={r.id}>
@@ -73,13 +66,9 @@ export default function AdminRequestsPage() {
 
       <div className="panel">
         <SectionTitle kicker="Last 20 decisions">History</SectionTitle>
-        {reviewed.length === 0 ? (
-          <Empty>No reviewed requests yet.</Empty>
-        ) : (
+        {reviewed.length === 0 ? <Empty>No reviewed requests yet.</Empty> : (
           <table>
-            <thead>
-              <tr><th>VA</th><th>Type</th><th>Dates</th><th>Decision</th><th>Reviewed</th></tr>
-            </thead>
+            <thead><tr><th>OTM</th><th>Type</th><th>Dates</th><th>Decision</th><th>Reviewed</th></tr></thead>
             <tbody>
               {reviewed.map(r => (
                 <tr key={r.id}>
