@@ -12,17 +12,28 @@ export default function AdminTeamPage() {
   const [editing, setEditing] = useState(null);
   const [credsOpen, setCredsOpen] = useState(false);
   const [credsUser, setCredsUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
   useEffect(() => { load(); }, []);
 
   async function load() {
-    const { data: u } = await supabase.from('users').select('*').order('name');
-    setUsers(u || []);
-    const sow = startOfWeek(new Date()).toISOString();
-    const { data: entries } = await supabase.from('time_entries').select('user_id, duration').gte('date', sow);
-    const stats = {};
-    (entries || []).forEach(e => { stats[e.user_id] = (stats[e.user_id] || 0) + e.duration; });
-    setWeekStats(stats);
+    setLoading(true);
+    setLoadError('');
+    try {
+      const { data: u, error: uErr } = await supabase.from('users').select('*').order('name');
+      if (uErr) setLoadError(uErr.message);
+      setUsers(u || []);
+      const sow = startOfWeek(new Date()).toISOString();
+      const { data: entries } = await supabase.from('time_entries').select('user_id, duration').gte('date', sow);
+      const stats = {};
+      (entries || []).forEach(e => { stats[e.user_id] = (stats[e.user_id] || 0) + e.duration; });
+      setWeekStats(stats);
+    } catch (e) {
+      setLoadError(e.message);
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function toggleActive(u) {
@@ -38,11 +49,23 @@ export default function AdminTeamPage() {
         kicker="Admin"
         title="OTM Team"
         subtitle="Manage your Outsourced Team Members, admins, and sub-admins."
-        right={<button className="btn-sm ink" onClick={() => { setEditing(null); setModalOpen(true); }}>+ ADD TEAM MEMBER</button>}
+        right={<>
+          <button className="btn-sm" onClick={load}>↻ Refresh</button>{' '}
+          <button className="btn-sm ink" onClick={() => { setEditing(null); setModalOpen(true); }}>+ ADD TEAM MEMBER</button>
+        </>}
       />
 
+      {loadError && (
+        <div className="panel mb-5" style={{ borderColor: 'var(--crimson)', background: 'rgba(168,4,4,0.06)' }}>
+          <div className="font-bebas tracking-widest text-xs text-crimson mb-1">LOAD ERROR</div>
+          <div className="text-sm">{loadError}</div>
+        </div>
+      )}
+
       <div className="panel p-0 overflow-hidden">
-        {users.length === 0 ? (
+        {loading ? (
+          <Empty>Loading…</Empty>
+        ) : users.length === 0 ? (
           <Empty>No team members yet.</Empty>
         ) : (
           <table>
@@ -93,6 +116,7 @@ export default function AdminTeamPage() {
 function UserModal({ open, onClose, editing, onSaved }) {
   const [form, setForm] = useState(emptyForm());
   const [businesses, setBusinesses] = useState([]);
+  const [businessLoadError, setBusinessLoadError] = useState('');
   const [assigned, setAssigned] = useState(new Set());
   const [children, setChildren] = useState([]);
   const [notableDates, setNotableDates] = useState([]);
@@ -111,9 +135,16 @@ function UserModal({ open, onClose, editing, onSaved }) {
     };
   }
 
+  // Load businesses every time modal opens (no caching - always fresh)
   useEffect(() => {
     if (!open) return;
-    supabase.from('businesses').select('id, name').eq('active', true).order('name').then(({ data }) => setBusinesses(data || []));
+    (async () => {
+      setBusinessLoadError('');
+      const { data, error } = await supabase.from('businesses').select('id, name, active').eq('active', true).order('name');
+      if (error) setBusinessLoadError(error.message);
+      setBusinesses(data || []);
+    })();
+
     if (editing) {
       setForm({
         name: editing.name || '', email: editing.email || '', password: '', role: editing.role,
@@ -151,6 +182,7 @@ function UserModal({ open, onClose, editing, onSaved }) {
   async function save() {
     setErr('');
     if (!form.name.trim() || !form.email.trim()) return setErr('Name and email are required.');
+    if (!editing && !form.email.includes('@')) return setErr('Please enter a valid email.');
     setBusy(true);
 
     try {
@@ -176,12 +208,10 @@ function UserModal({ open, onClose, editing, onSaved }) {
       let tempPassword = null;
 
       if (editing) {
-        // Update existing
         const { error } = await supabase.from('users').update(profileData).eq('id', editing.id);
         if (error) throw error;
         userId = editing.id;
       } else {
-        // Create via edge function
         if (!form.password) {
           tempPassword = generatePassword();
         } else if (form.password.length < 12) {
@@ -191,12 +221,14 @@ function UserModal({ open, onClose, editing, onSaved }) {
         }
 
         const { data: { session } } = await supabase.auth.getSession();
+        if (!session) throw new Error('Not signed in. Refresh and log in again.');
         const url = import.meta.env.VITE_SUPABASE_URL;
         const resp = await fetch(`${url}/functions/v1/create-user`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.access_token}`
+            'Authorization': `Bearer ${session.access_token}`,
+            'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY
           },
           body: JSON.stringify({
             type: 'user',
@@ -207,15 +239,17 @@ function UserModal({ open, onClose, editing, onSaved }) {
         });
 
         const result = await resp.json();
-        if (!resp.ok) throw new Error(result.error || 'Failed to create user');
-        userId = result.id;
+        if (!resp.ok) throw new Error(result.error || `Edge function returned ${resp.status}`);
+        userId = result.user_id || result.id;
+        if (!userId) throw new Error('Edge function did not return user_id');
       }
 
       // Handle assignments
       await supabase.from('va_assignments').delete().eq('va_id', userId);
       if (form.role === 'va' && assigned.size) {
         const rows = Array.from(assigned).map(bid => ({ va_id: userId, business_id: bid }));
-        await supabase.from('va_assignments').insert(rows);
+        const { error: aErr } = await supabase.from('va_assignments').insert(rows);
+        if (aErr) throw new Error('User saved but assignment failed: ' + aErr.message);
       }
 
       await logAudit(editing ? 'user.update' : 'user.create', 'user', userId, { name: form.name });
@@ -248,7 +282,6 @@ function UserModal({ open, onClose, editing, onSaved }) {
   function updateDate(i, k, v) { const d = [...notableDates]; d[i][k] = v; setNotableDates(d); }
   function removeDate(i) { setNotableDates(notableDates.filter((_, j) => j !== i)); }
 
-  // Post-create password display
   if (newPassword) {
     return (
       <Modal open={open} onClose={() => { setNewPassword(''); onSaved(); }}
@@ -322,7 +355,7 @@ function UserModal({ open, onClose, editing, onSaved }) {
 
       <div className="font-bebas text-[11px] tracking-widest text-crimson mb-3">CONTACT & HR</div>
       <div className="grid grid-cols-2 gap-3 mb-3">
-        <div><label className="field-label">Phone</label><input className="input" {...f('phone')} /></div>
+        <div><label className="field-label">Phone</label><input className="input" {...f('phone')} placeholder="555-555-5555" /></div>
         <div><label className="field-label">Start date</label><input type="date" className="input" {...f('start_date')} /></div>
         <div><label className="field-label">Hourly rate ($)</label><input type="number" step="0.01" className="input" {...f('hourly_rate')} /></div>
         <div><label className="field-label">Weekly hours committed</label><input type="number" className="input" {...f('weekly_hours_committed')} /></div>
@@ -334,7 +367,7 @@ function UserModal({ open, onClose, editing, onSaved }) {
       <div className="font-bebas text-[11px] tracking-widest text-crimson mb-3">EMERGENCY CONTACT</div>
       <div className="grid grid-cols-2 gap-3 mb-4">
         <div><label className="field-label">Name</label><input className="input" {...f('emergency_contact_name')} /></div>
-        <div><label className="field-label">Phone</label><input className="input" {...f('emergency_contact_phone')} /></div>
+        <div><label className="field-label">Phone</label><input className="input" {...f('emergency_contact_phone')} placeholder="555-555-5555" /></div>
         <div className="col-span-2"><label className="field-label">Relationship</label><input className="input" {...f('emergency_contact_relationship')} /></div>
       </div>
 
@@ -366,8 +399,10 @@ function UserModal({ open, onClose, editing, onSaved }) {
         <>
           <div className="font-bebas text-[11px] tracking-widest text-crimson mb-2 mt-4">ASSIGN TO BUSINESSES</div>
           <div className="bg-cream-deep border border-line p-3 rounded max-h-40 overflow-y-auto">
-            {businesses.length === 0 ? (
-              <div className="text-xs text-muted italic">No businesses yet. Add a client first.</div>
+            {businessLoadError ? (
+              <div className="text-xs text-crimson">Could not load businesses: {businessLoadError}</div>
+            ) : businesses.length === 0 ? (
+              <div className="text-xs text-muted italic">No businesses yet. Add a client first to create a business.</div>
             ) : businesses.map(b => (
               <label key={b.id} className="flex items-center gap-2 py-1 text-sm cursor-pointer">
                 <input type="checkbox" checked={assigned.has(b.id)} onChange={() => toggleAssign(b.id)} />
@@ -375,7 +410,7 @@ function UserModal({ open, onClose, editing, onSaved }) {
               </label>
             ))}
           </div>
-          <div className="text-xs text-muted mt-1">OTM only sees the businesses you check.</div>
+          <div className="text-xs text-muted mt-1">OTM only sees the businesses you check. {businesses.length} business(es) available.</div>
         </>
       )}
 
@@ -410,7 +445,8 @@ function CredentialsModal({ open, onClose, user }) {
   }, [open, user]);
 
   async function load() {
-    const { data } = await supabase.from('otm_credentials').select('*').eq('user_id', user.id).order('uploaded_at', { ascending: false });
+    const { data, error } = await supabase.from('otm_credentials').select('*').eq('user_id', user.id).order('uploaded_at', { ascending: false });
+    if (error) toast.show('Could not load credentials: ' + error.message, 'error');
     setCreds(data || []);
   }
 

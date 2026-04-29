@@ -10,36 +10,73 @@ import { formatHours, startOfMonth } from '../../lib/format';
 export default function AdminClientsPage() {
   const [clients, setClients] = useState([]);
   const [businesses, setBusinesses] = useState([]);
+  const [allOTMs, setAllOTMs] = useState([]);
+  const [assignmentsByBiz, setAssignmentsByBiz] = useState({});
   const [monthStats, setMonthStats] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [addClientOpen, setAddClientOpen] = useState(false);
   const [editClientOpen, setEditClientOpen] = useState(false);
   const [editingClient, setEditingClient] = useState(null);
   const [bizModalOpen, setBizModalOpen] = useState(false);
   const [editingBiz, setEditingBiz] = useState(null);
   const [presetClientId, setPresetClientId] = useState(null);
+  const [otmModalOpen, setOTMModalOpen] = useState(false);
+  const [otmModalBiz, setOTMModalBiz] = useState(null);
 
   useEffect(() => { load(); }, []);
 
   async function load() {
-    const { data: c } = await supabase.from('clients').select('*').order('name');
-    setClients(c || []);
-    const { data: b } = await supabase.from('businesses').select('*').order('name');
-    setBusinesses(b || []);
+    setLoading(true);
+    setLoadError('');
+    try {
+      const [clientsResult, bizResult, otmsResult, assignsResult] = await Promise.all([
+        supabase.from('clients').select('*').order('name'),
+        supabase.from('businesses').select('*').order('name'),
+        supabase.from('users').select('id, name, email, active').eq('role', 'va').eq('active', true).order('name'),
+        supabase.from('va_assignments').select('va_id, business_id, users(id, name)')
+      ]);
 
-    const som = startOfMonth(new Date()).toISOString();
-    const { data: entries } = await supabase.from('time_entries').select('business_id, duration').gte('date', som);
-    const stats = {};
-    (entries || []).forEach(e => { stats[e.business_id] = (stats[e.business_id] || 0) + e.duration; });
-    setMonthStats(stats);
+      // Surface any RLS / network errors instead of silently showing zero
+      const errors = [clientsResult.error, bizResult.error, otmsResult.error, assignsResult.error].filter(Boolean);
+      if (errors.length) {
+        setLoadError(errors.map(e => e.message).join(' | '));
+      }
+
+      setClients(clientsResult.data || []);
+      setBusinesses(bizResult.data || []);
+      setAllOTMs(otmsResult.data || []);
+
+      // Group assignments by business for quick lookup
+      const byBiz = {};
+      (assignsResult.data || []).forEach(a => {
+        if (!byBiz[a.business_id]) byBiz[a.business_id] = [];
+        byBiz[a.business_id].push({ va_id: a.va_id, name: a.users?.name });
+      });
+      setAssignmentsByBiz(byBiz);
+
+      // Month stats for retainer usage
+      const som = startOfMonth(new Date()).toISOString();
+      const { data: entries } = await supabase.from('time_entries').select('business_id, duration').gte('date', som);
+      const stats = {};
+      (entries || []).forEach(e => { stats[e.business_id] = (stats[e.business_id] || 0) + e.duration; });
+      setMonthStats(stats);
+    } catch (e) {
+      setLoadError(e.message);
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function toggleClientActive(c) {
-    await supabase.from('clients').update({ active: !c.active }).eq('id', c.id);
+    const { error } = await supabase.from('clients').update({ active: !c.active }).eq('id', c.id);
+    if (error) return alert(error.message);
     await logAudit(c.active ? 'client.deactivate' : 'client.activate', 'client', c.id);
     load();
   }
   async function toggleBizActive(b) {
-    await supabase.from('businesses').update({ active: !b.active }).eq('id', b.id);
+    const { error } = await supabase.from('businesses').update({ active: !b.active }).eq('id', b.id);
+    if (error) return alert(error.message);
     await logAudit(b.active ? 'business.deactivate' : 'business.activate', 'business', b.id);
     load();
   }
@@ -50,10 +87,23 @@ export default function AdminClientsPage() {
         kicker="Admin"
         title="Client Accounts"
         subtitle="Manage client contacts and their business retainers. A client can own multiple businesses."
-        right={<button className="btn-sm ink" onClick={() => setAddClientOpen(true)}>+ ADD CLIENT</button>}
+        right={<>
+          <button className="btn-sm" onClick={load}>↻ Refresh</button>{' '}
+          <button className="btn-sm ink" onClick={() => setAddClientOpen(true)}>+ ADD CLIENT</button>
+        </>}
       />
 
-      {clients.length === 0 ? (
+      {loadError && (
+        <div className="panel mb-5" style={{ borderColor: 'var(--crimson)', background: 'rgba(168,4,4,0.06)' }}>
+          <div className="font-bebas tracking-widest text-xs text-crimson mb-1">LOAD ERROR</div>
+          <div className="text-sm">{loadError}</div>
+          <div className="text-xs text-muted mt-2">If this persists, check your network or contact your developer.</div>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="panel"><Empty>Loading…</Empty></div>
+      ) : clients.length === 0 ? (
         <div className="panel"><Empty>No clients yet. Add your first client to get started.</Empty></div>
       ) : clients.map(c => {
         const clientBusinesses = businesses.filter(b => b.client_id === c.id);
@@ -74,16 +124,17 @@ export default function AdminClientsPage() {
               </div>
             </div>
             {clientBusinesses.length === 0 ? (
-              <div className="text-sm text-muted italic">No businesses yet. Add one above.</div>
+              <div className="text-sm text-muted italic">No businesses yet. Click "+ ADD BUSINESS" above to add one.</div>
             ) : (
               <table>
                 <thead>
-                  <tr><th></th><th>Business</th><th>Type / Industry</th><th>Tier / Hrs</th><th>Used this mo</th><th>Fee</th><th>Status</th><th></th></tr>
+                  <tr><th></th><th>Business</th><th>Type / Industry</th><th>Tier / Hrs</th><th>Used this mo</th><th>Fee</th><th>OTMs</th><th>Status</th><th></th></tr>
                 </thead>
                 <tbody>
                   {clientBusinesses.map(b => {
                     const used = (monthStats[b.id] || 0) / 3600;
-                    const pct = (used / b.monthly_hours) * 100;
+                    const pct = b.monthly_hours > 0 ? (used / b.monthly_hours) * 100 : 0;
+                    const otms = assignmentsByBiz[b.id] || [];
                     return (
                       <tr key={b.id}>
                         <td><span style={businessDot(b.id)} /></td>
@@ -98,10 +149,16 @@ export default function AdminClientsPage() {
                         <td>{b.tier} • {b.monthly_hours}h</td>
                         <td>{formatHours(used)} <span className="text-xs text-muted">({pct.toFixed(0)}%)</span></td>
                         <td>${(b.monthly_fee || 0).toLocaleString()}</td>
+                        <td>
+                          {otms.length === 0 ? <span className="text-xs text-muted italic">None</span> : (
+                            <div className="text-xs">{otms.map(o => o.name).join(', ')}</div>
+                          )}
+                        </td>
                         <td><span className={`badge ${b.active ? 'active' : 'hold'}`}>{b.active ? 'ACTIVE' : 'OFF'}</span></td>
                         <td className="whitespace-nowrap">
                           <button className="btn-sm" onClick={() => { setPresetClientId(c.id); setEditingBiz(b); setBizModalOpen(true); }}>Edit</button>{' '}
-                          <button className="btn-sm" onClick={() => toggleBizActive(b)}>{b.active ? 'Deactivate' : 'Activate'}</button>
+                          <button className="btn-sm" onClick={() => { setOTMModalBiz(b); setOTMModalOpen(true); }}>Assign OTMs</button>{' '}
+                          <button className="btn-sm" onClick={() => toggleBizActive(b)}>{b.active ? 'Off' : 'On'}</button>
                         </td>
                       </tr>
                     );
@@ -113,31 +170,15 @@ export default function AdminClientsPage() {
         );
       })}
 
-      <AddClientModal
-        open={addClientOpen}
-        onClose={() => setAddClientOpen(false)}
-        onSaved={() => { setAddClientOpen(false); load(); }}
-      />
-
-      <EditClientModal
-        open={editClientOpen}
-        onClose={() => setEditClientOpen(false)}
-        editing={editingClient}
-        onSaved={() => { setEditClientOpen(false); load(); }}
-      />
-
-      <BusinessModal
-        open={bizModalOpen}
-        onClose={() => setBizModalOpen(false)}
-        editing={editingBiz}
-        clientId={presetClientId}
-        onSaved={() => { setBizModalOpen(false); load(); }}
-      />
+      <AddClientModal open={addClientOpen} onClose={() => setAddClientOpen(false)} onSaved={() => { setAddClientOpen(false); load(); }} />
+      <EditClientModal open={editClientOpen} onClose={() => setEditClientOpen(false)} editing={editingClient} onSaved={() => { setEditClientOpen(false); load(); }} />
+      <BusinessModal open={bizModalOpen} onClose={() => setBizModalOpen(false)} editing={editingBiz} clientId={presetClientId} onSaved={() => { setBizModalOpen(false); load(); }} />
+      <AssignOTMModal open={otmModalOpen} onClose={() => setOTMModalOpen(false)} business={otmModalBiz} otms={allOTMs} currentAssignments={otmModalBiz ? (assignmentsByBiz[otmModalBiz.id] || []) : []} onSaved={() => { setOTMModalOpen(false); load(); }} />
     </div>
   );
 }
 
-// Combined client + first business form (Option C from our design discussion)
+// Combined client + first business form
 function AddClientModal({ open, onClose, onSaved }) {
   const [form, setForm] = useState(emptyForm());
   const [err, setErr] = useState('');
@@ -147,9 +188,7 @@ function AddClientModal({ open, onClose, onSaved }) {
 
   function emptyForm() {
     return {
-      // client
       contactName: '', email: '', password: '', phone: '', address: '', birthday: '',
-      // business
       companyName: '', businessType: 'LLC', industry: '', website: '', ein: '',
       contractStart: '', contractEnd: '',
       tier: 'Starter', monthlyHours: 40, monthlyFee: 0, rolloverEnabled: true, rolloverCapPct: 50, overageRate: ''
@@ -173,6 +212,7 @@ function AddClientModal({ open, onClose, onSaved }) {
     setErr('');
     if (!form.contactName.trim()) return setErr('Contact person name is required.');
     if (!form.email.trim()) return setErr('Email is required.');
+    if (!form.email.includes('@')) return setErr('Please enter a valid email.');
     if (!form.companyName.trim()) return setErr('Company name is required.');
     if (!form.industry) return setErr('Pick a business industry.');
 
@@ -181,8 +221,8 @@ function AddClientModal({ open, onClose, onSaved }) {
       const tempPassword = form.password || generatePassword();
       if (tempPassword.length < 12) throw new Error('Password must be at least 12 characters.');
 
-      // Create client via edge function
       const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('Not signed in. Please refresh the page and log in again.');
       const url = import.meta.env.VITE_SUPABASE_URL;
 
       const clientProfile = {
@@ -196,7 +236,8 @@ function AddClientModal({ open, onClose, onSaved }) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY
         },
         body: JSON.stringify({
           type: 'client',
@@ -206,15 +247,15 @@ function AddClientModal({ open, onClose, onSaved }) {
         })
       });
       const result = await resp.json();
-      if (!resp.ok) throw new Error(result.error || 'Failed to create client');
+      if (!resp.ok) throw new Error(result.error || `Edge function returned ${resp.status}`);
 
-      // Now fetch the created client row to get the id
-      const { data: clientRow } = await supabase.from('clients').select('id').eq('auth_user_id', result.id).single();
-      if (!clientRow) throw new Error('Client created but profile row missing');
+      // Use the client_id returned by the edge function (no second fetch needed)
+      const clientId = result.client_id;
+      if (!clientId) throw new Error('Edge function did not return client_id. Update the edge function code.');
 
       // Create the first business
       const { error: bizErr } = await supabase.from('businesses').insert({
-        client_id: clientRow.id,
+        client_id: clientId,
         name: form.companyName.trim(),
         business_type: form.businessType,
         industry: form.industry,
@@ -227,11 +268,12 @@ function AddClientModal({ open, onClose, onSaved }) {
         monthly_fee: parseFloat(form.monthlyFee) || 0,
         rollover_enabled: !!form.rolloverEnabled,
         rollover_cap_pct: parseInt(form.rolloverCapPct) || 50,
-        overage_rate: form.overageRate ? parseFloat(form.overageRate) : null
+        overage_rate: form.overageRate ? parseFloat(form.overageRate) : null,
+        active: true
       });
-      if (bizErr) throw bizErr;
+      if (bizErr) throw new Error('Client was created but business insert failed: ' + bizErr.message);
 
-      await logAudit('client.create', 'client', clientRow.id, { name: form.contactName, company: form.companyName });
+      await logAudit('client.create', 'client', clientId, { name: form.contactName, company: form.companyName });
 
       setBusy(false);
       setNewPassword(tempPassword);
@@ -267,19 +309,17 @@ function AddClientModal({ open, onClose, onSaved }) {
 
   return (
     <Modal open={open} onClose={onClose} title="Add client" subtitle="Creates the client contact and their first business together."
-      footer={
-        <>
-          <button className="btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn-sm ink" onClick={save} disabled={busy}>{busy ? 'CREATING…' : 'CREATE CLIENT + BUSINESS'}</button>
-        </>
-      }>
+      footer={<>
+        <button className="btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn-sm ink" onClick={save} disabled={busy}>{busy ? 'CREATING…' : 'CREATE CLIENT + BUSINESS'}</button>
+      </>}>
       <div className="font-bebas text-[11px] tracking-widest text-crimson mb-3">CONTACT PERSON (PORTAL LOGIN)</div>
       <div className="grid grid-cols-2 gap-3 mb-3">
         <div><label className="field-label">Contact name</label><input className="input" {...f('contactName')} placeholder="Jane Smith" /></div>
         <div><label className="field-label">Email (login)</label><input type="email" className="input" {...f('email')} /></div>
       </div>
       <div className="grid grid-cols-2 gap-3 mb-3">
-        <div><label className="field-label">Phone</label><input className="input" {...f('phone')} /></div>
+        <div><label className="field-label">Phone</label><input className="input" {...f('phone')} placeholder="555-555-5555" /></div>
         <div><label className="field-label">Birthday</label><input type="date" className="input" {...f('birthday')} /></div>
       </div>
       <div className="mb-3">
@@ -288,7 +328,7 @@ function AddClientModal({ open, onClose, onSaved }) {
       </div>
       <div className="mb-5">
         <label className="field-label">Temporary password (leave blank to auto-generate)</label>
-        <input className="input" {...f('password')} placeholder="Auto-generate secure password" />
+        <input type="text" className="input" {...f('password')} placeholder="Auto-generate secure password" />
       </div>
 
       <div className="font-bebas text-[11px] tracking-widest text-crimson mb-3">FIRST BUSINESS</div>
@@ -344,7 +384,6 @@ function AddClientModal({ open, onClose, onSaved }) {
   );
 }
 
-// Edit an existing client's contact info (no business creation here)
 function EditClientModal({ open, onClose, editing, onSaved }) {
   const [form, setForm] = useState({});
   const [err, setErr] = useState('');
@@ -475,7 +514,7 @@ function BusinessModal({ open, onClose, editing, clientId, onSaved }) {
     };
     const { error } = editing
       ? await supabase.from('businesses').update(payload).eq('id', editing.id)
-      : await supabase.from('businesses').insert(payload);
+      : await supabase.from('businesses').insert({ ...payload, active: true });
     setBusy(false);
     if (error) return setErr(error.message);
     await logAudit(editing ? 'business.update' : 'business.create', 'business', editing?.id, { name: form.name });
@@ -535,6 +574,62 @@ function BusinessModal({ open, onClose, editing, clientId, onSaved }) {
       </div>
 
       {err && <div className="text-sm text-crimson mt-3">{err}</div>}
+    </Modal>
+  );
+}
+
+function AssignOTMModal({ open, onClose, business, otms, currentAssignments, onSaved }) {
+  const [selected, setSelected] = useState(new Set());
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  useEffect(() => {
+    if (open) setSelected(new Set(currentAssignments.map(a => a.va_id)));
+  }, [open, currentAssignments]);
+
+  if (!business) return null;
+
+  function toggle(id) {
+    const s = new Set(selected);
+    s.has(id) ? s.delete(id) : s.add(id);
+    setSelected(s);
+  }
+
+  async function save() {
+    setBusy(true);
+    // Wipe and re-insert assignments for this business
+    const { error: delErr } = await supabase.from('va_assignments').delete().eq('business_id', business.id);
+    if (delErr) { setBusy(false); return toast.show(delErr.message, 'error'); }
+    if (selected.size > 0) {
+      const rows = Array.from(selected).map(vaId => ({ va_id: vaId, business_id: business.id }));
+      const { error: insErr } = await supabase.from('va_assignments').insert(rows);
+      if (insErr) { setBusy(false); return toast.show(insErr.message, 'error'); }
+    }
+    await logAudit('va_assignment.bulk_update', 'business', business.id, { count: selected.size });
+    setBusy(false);
+    toast.show(`${selected.size} OTM(s) assigned to ${business.name}.`);
+    onSaved();
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title={`Assign OTMs — ${business.name}`}
+      subtitle="Check OTMs who should work on this business."
+      footer={<><button className="btn-ghost" onClick={onClose}>Cancel</button><button className="btn-sm ink" onClick={save} disabled={busy}>{busy ? 'SAVING…' : 'SAVE ASSIGNMENTS'}</button></>}>
+      {otms.length === 0 ? (
+        <Empty>No active OTMs. Add them in the OTM Team page first.</Empty>
+      ) : (
+        <div className="bg-cream-deep border border-line p-3 rounded">
+          {otms.map(o => (
+            <label key={o.id} className="flex items-center gap-3 py-2 cursor-pointer hover:bg-paper px-2 rounded">
+              <input type="checkbox" checked={selected.has(o.id)} onChange={() => toggle(o.id)} />
+              <div>
+                <div className="font-medium text-sm">{o.name}</div>
+                <div className="text-[11px] text-muted">{o.email}</div>
+              </div>
+            </label>
+          ))}
+        </div>
+      )}
     </Modal>
   );
 }

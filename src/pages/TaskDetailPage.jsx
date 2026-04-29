@@ -16,13 +16,29 @@ export default function TaskDetailPage({ role, profile }) {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef(null);
   const audioInputRef = useRef(null);
+  const commentsEndRef = useRef(null);
 
   useEffect(() => { load(); }, [taskId]);
+
+  // Mark all comments as read by current user when they view
+  useEffect(() => {
+    if (!profile || comments.length === 0) return;
+    const otherComments = comments.filter(c => c.author_id !== profile.id);
+    if (otherComments.length === 0) return;
+    const rows = otherComments.map(c => ({ comment_id: c.id, user_id: profile.id }));
+    // upsert (ignore conflict on PK)
+    supabase.from('task_comment_reads').upsert(rows, { onConflict: 'comment_id,user_id' }).then(() => {});
+  }, [comments, profile]);
+
+  // Scroll comments to bottom on load
+  useEffect(() => {
+    if (commentsEndRef.current) commentsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+  }, [comments.length]);
 
   async function load() {
     const { data: t } = await supabase
       .from('tasks')
-      .select('*, businesses(name, client_id, clients(name)), users!tasks_assignee_id_fkey(name)')
+      .select('*, businesses(name, client_id, clients(name)), users!tasks_assignee_id_fkey(name), creator:users!tasks_created_by_fkey(name)')
       .eq('id', taskId).single();
     setTask(t);
 
@@ -58,7 +74,7 @@ export default function TaskDetailPage({ role, profile }) {
     load();
   }
 
-  async function downloadFile(path, name) {
+  async function downloadFile(path) {
     const { data, error } = await supabase.storage.from('task-attachments').createSignedUrl(path, 60);
     if (error) return toast.show('Download failed: ' + error.message, 'error');
     window.open(data.signedUrl, '_blank');
@@ -129,6 +145,7 @@ export default function TaskDetailPage({ role, profile }) {
 
   const color = getBusinessColor(task.business_id);
   const isOTM = role === 'va' || role === 'otm';
+  const isAdmin = role === 'admin' || role === 'sub_admin';
 
   return (
     <div>
@@ -136,7 +153,6 @@ export default function TaskDetailPage({ role, profile }) {
         <Link to="/tasks" className="text-crimson text-sm hover:underline">← Back to tasks</Link>
       </div>
 
-      {/* Business breadcrumb */}
       <div className="flex items-center gap-2 mb-3 text-sm">
         <span style={businessDot(task.business_id)} />
         <span className="font-bebas tracking-widest text-xs" style={{ color: color.hex }}>{task.businesses?.name}</span>
@@ -147,7 +163,7 @@ export default function TaskDetailPage({ role, profile }) {
       <PageHeader
         kicker={task.businesses?.name}
         title={task.title}
-        subtitle={<>Created {formatDateTime(task.created_at)} • Assigned to {task.users?.name || 'unassigned'}</>}
+        subtitle={<>Created {formatDateTime(task.created_at)} by {task.creator?.name || 'system'} • Assigned to {task.users?.name || 'unassigned'}</>}
         right={<span className={`badge ${statusBadge}`}>{statusLabel}</span>}
       />
 
@@ -174,7 +190,7 @@ export default function TaskDetailPage({ role, profile }) {
                 <button className="btn-sm danger" onClick={requestRevision}>REQUEST REVISION</button>
               </>
             )}
-            {(role === 'admin' || role === 'sub_admin') && (
+            {isAdmin && (
               <>
                 {task.status === 'submitted' && <button className="btn-sm ink" onClick={approve}>APPROVE</button>}
                 {task.status === 'submitted' && <button className="btn-sm danger" onClick={requestRevision}>REQUEST REVISION</button>}
@@ -194,7 +210,7 @@ export default function TaskDetailPage({ role, profile }) {
       <div className="panel mb-6">
         <div className="flex justify-between items-start mb-3">
           <SectionTitle kicker="Listen">Audio instructions</SectionTitle>
-          {(role === 'admin' || role === 'sub_admin' || role === 'client') && (
+          {(isAdmin || role === 'client') && (
             <>
               <input type="file" accept="audio/*" ref={audioInputRef} style={{ display: 'none' }}
                 onChange={e => e.target.files[0] && uploadFile(e.target.files[0], true)} />
@@ -227,7 +243,7 @@ export default function TaskDetailPage({ role, profile }) {
                   <td>{a.file_name}</td>
                   <td>{formatDateTime(a.created_at)}</td>
                   <td>{a.file_size ? `${(a.file_size / 1024 / 1024).toFixed(2)} MB` : '—'}</td>
-                  <td><button className="btn-sm" onClick={() => downloadFile(a.file_path, a.file_name)}>Download</button></td>
+                  <td><button className="btn-sm" onClick={() => downloadFile(a.file_path)}>Download</button></td>
                 </tr>
               ))}
             </tbody>
@@ -236,23 +252,56 @@ export default function TaskDetailPage({ role, profile }) {
       </div>
 
       <div className="panel">
-        <SectionTitle kicker="Communication">Comments</SectionTitle>
-        <div className="space-y-3 mb-4">
-          {comments.length === 0 ? <Empty>No comments yet. Start the conversation below.</Empty> : comments.map(c => (
-            <div key={c.id} className="border-l-2 border-line pl-4 py-1">
-              <div className="flex items-baseline gap-2 flex-wrap">
-                <strong className="text-sm">{c.author_name}</strong>
-                <span className="badge ink text-[9px]">{c.author_role === 'va' ? 'OTM' : c.author_role.toUpperCase()}</span>
-                <span className="text-xs text-muted">{formatDateTime(c.created_at)}</span>
+        <SectionTitle kicker="Communication">Conversation</SectionTitle>
+        <div className="text-xs text-muted mb-4">All messages here are visible to admins, the assigned OTM, and the business client. {comments.length} message{comments.length === 1 ? '' : 's'}.</div>
+
+        <div className="bg-cream-deep border border-line rounded p-3 max-h-[450px] overflow-y-auto mb-4">
+          {comments.length === 0 ? (
+            <div className="text-center py-6 text-muted italic text-sm">No messages yet. Start the conversation below.</div>
+          ) : comments.map(c => {
+            const mine = c.author_id === profile?.id;
+            const roleColors = { admin: 'var(--ink)', sub_admin: 'var(--ink)', va: 'var(--crimson)', client: 'var(--navy, #1e3a5f)' };
+            const roleLabel = c.author_role === 'va' ? 'OTM' : c.author_role.toUpperCase().replace('_', '-');
+            return (
+              <div key={c.id} className={`mb-3 flex ${mine ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[78%] ${mine ? 'bg-paper border border-line' : 'bg-paper border border-line'} rounded-lg p-3 shadow-sm`}
+                  style={mine ? { borderLeft: '3px solid var(--ok)' } : { borderLeft: `3px solid ${roleColors[c.author_role] || 'var(--slate)'}` }}>
+                  <div className="flex items-baseline gap-2 mb-1 flex-wrap">
+                    <strong className="text-sm">{mine ? 'You' : c.author_name}</strong>
+                    <span className="badge text-[9px]" style={{ background: roleColors[c.author_role] || 'var(--slate)', color: 'var(--cream)' }}>{roleLabel}</span>
+                    <span className="text-[10px] text-muted">{formatDateTime(c.created_at)}</span>
+                  </div>
+                  <div className="text-sm text-ink whitespace-pre-wrap">{c.body}</div>
+                </div>
               </div>
-              <div className="text-sm text-ink mt-1 whitespace-pre-wrap">{c.body}</div>
-            </div>
-          ))}
+            );
+          })}
+          <div ref={commentsEndRef} />
         </div>
-        <div className="pt-4 border-t border-line-soft">
-          <textarea className="input" rows="3" value={newComment} onChange={e => setNewComment(e.target.value)} placeholder="Write a comment..." />
-          <div className="flex justify-end mt-2">
-            <button className="btn-sm ink" onClick={postComment} disabled={!newComment.trim()}>POST COMMENT</button>
+
+        <div className="pt-2 border-t border-line-soft">
+          <textarea
+            className="input"
+            rows="3"
+            value={newComment}
+            onChange={e => setNewComment(e.target.value)}
+            placeholder={`Write a message to ${
+              role === 'client'
+                ? (task.users?.name || 'the OTM')
+                : role === 'admin' || role === 'sub_admin'
+                  ? 'the team'
+                  : (task.businesses?.clients?.name || 'the client')
+            }...`}
+            onKeyDown={e => {
+              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                e.preventDefault();
+                postComment();
+              }
+            }}
+          />
+          <div className="flex justify-between items-center mt-2">
+            <div className="text-[10px] text-muted">Press Cmd/Ctrl+Enter to send.</div>
+            <button className="btn-sm ink" onClick={postComment} disabled={!newComment.trim()}>SEND MESSAGE</button>
           </div>
         </div>
       </div>

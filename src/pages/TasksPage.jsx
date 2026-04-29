@@ -15,6 +15,7 @@ const STATUS_COLS = [
 
 export default function TasksPage({ role, profile }) {
   const [tasks, setTasks] = useState([]);
+  const [unreadByTask, setUnreadByTask] = useState({});
   const [newOpen, setNewOpen] = useState(false);
   const nav = useNavigate();
   const toast = useToast();
@@ -26,9 +27,25 @@ export default function TasksPage({ role, profile }) {
     let tq = supabase.from('tasks')
       .select('*, businesses(name, client_id, clients(name)), users!tasks_assignee_id_fkey(name)')
       .order('created_at', { ascending: false });
-    if (role === 'otm' || role === 'va') tq = tq.eq('assignee_id', profile.id);
     const { data: t } = await tq;
     setTasks(t || []);
+
+    // Unread comment counts (per task) for current user
+    if (profile && t?.length) {
+      const taskIds = t.map(x => x.id);
+      const [{ data: allComments }, { data: reads }] = await Promise.all([
+        supabase.from('task_comments').select('id, task_id, author_id, created_at').in('task_id', taskIds),
+        supabase.from('task_comment_reads').select('comment_id').eq('user_id', profile.id)
+      ]);
+      const readSet = new Set((reads || []).map(r => r.comment_id));
+      const counts = {};
+      (allComments || []).forEach(c => {
+        if (c.author_id === profile.id) return; // own comments don't count
+        if (readSet.has(c.id)) return;
+        counts[c.task_id] = (counts[c.task_id] || 0) + 1;
+      });
+      setUnreadByTask(counts);
+    }
   }
 
   async function updateStatus(taskId, newStatus) {
@@ -76,7 +93,6 @@ export default function TasksPage({ role, profile }) {
     loadAll();
   }
 
-  // Filter tasks based on business selector
   function filtered() {
     return tasks.filter(t => {
       if (selectedId !== 'all' && t.business_id !== selectedId) return false;
@@ -84,7 +100,8 @@ export default function TasksPage({ role, profile }) {
     });
   }
 
-  const canCreate = role === 'admin' || role === 'sub_admin' || role === 'client';
+  // EVERY role can create tasks now (OTMs included)
+  const canCreate = true;
   const ts = filtered();
   const isOTM = role === 'va' || role === 'otm';
 
@@ -94,7 +111,10 @@ export default function TasksPage({ role, profile }) {
         kicker="Execute"
         title="Tasks"
         subtitle={selected ? `Tasks for ${selected.name}.` : 'All tasks across your businesses.'}
-        right={canCreate && <button className="btn-sm ink" onClick={() => setNewOpen(true)}>+ NEW TASK</button>}
+        right={canCreate && <>
+          <button className="btn-sm" onClick={loadAll}>↻ Refresh</button>{' '}
+          <button className="btn-sm ink" onClick={() => setNewOpen(true)}>+ NEW TASK</button>
+        </>}
       />
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -110,7 +130,15 @@ export default function TasksPage({ role, profile }) {
                 <div className="text-xs text-muted italic text-center py-4">Empty</div>
               ) : (
                 colTasks.map(t => (
-                  <TaskCard key={t.id} task={t} role={role} profile={profile} onClick={() => nav(`/tasks/${t.id}`)} onStatusChange={updateStatus} />
+                  <TaskCard
+                    key={t.id}
+                    task={t}
+                    role={role}
+                    profile={profile}
+                    unread={unreadByTask[t.id] || 0}
+                    onClick={() => nav(`/tasks/${t.id}`)}
+                    onStatusChange={updateStatus}
+                  />
                 ))
               )}
             </div>
@@ -124,7 +152,7 @@ export default function TasksPage({ role, profile }) {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               {ts.filter(t => t.status === 'revision_requested').map(t => (
-                <TaskCard key={t.id} task={t} role={role} profile={profile} onClick={() => nav(`/tasks/${t.id}`)} onStatusChange={updateStatus} />
+                <TaskCard key={t.id} task={t} role={role} profile={profile} unread={unreadByTask[t.id] || 0} onClick={() => nav(`/tasks/${t.id}`)} onStatusChange={updateStatus} />
               ))}
             </div>
           </div>
@@ -144,14 +172,19 @@ export default function TasksPage({ role, profile }) {
   );
 }
 
-function TaskCard({ task, role, profile, onClick, onStatusChange }) {
+function TaskCard({ task, role, profile, unread, onClick, onStatusChange }) {
   const color = getBusinessColor(task.business_id);
   const isOTM = role === 'va' || role === 'otm';
   return (
-    <div className="bg-paper border rounded p-3 mb-2 cursor-pointer hover:border-ink transition-all"
+    <div className="bg-paper border rounded p-3 mb-2 cursor-pointer hover:border-ink transition-all relative"
          style={{ borderLeftWidth: 3, borderLeftColor: color.hex, borderColor: 'var(--line)' }}
          onClick={onClick}>
-      <div className="font-medium text-sm mb-1.5 leading-snug">{task.title}</div>
+      {unread > 0 && (
+        <span className="absolute top-2 right-2 bg-crimson text-cream font-bebas text-[10px] tracking-widest px-2 py-0.5 rounded-full">
+          {unread} NEW
+        </span>
+      )}
+      <div className="font-medium text-sm mb-1.5 leading-snug pr-12">{task.title}</div>
       <div className="text-[11px] text-muted flex justify-between gap-2 items-center">
         <span className="flex items-center gap-1.5 truncate">
           <span style={businessDot(task.business_id)} />
@@ -196,18 +229,30 @@ function NewTaskModal({ open, onClose, role, profile, businesses, presetBusiness
   useEffect(() => {
     async function loadOTMs() {
       if (!businessId) { setAssignableOTMs([]); return; }
-      const { data: a } = await supabase.from('va_assignments').select('va_id, users!inner(id, name, active)').eq('business_id', businessId);
+      const { data: a } = await supabase
+        .from('va_assignments')
+        .select('va_id, users!inner(id, name, active)')
+        .eq('business_id', businessId);
       const otms = (a || []).filter(x => x.users?.active).map(x => x.users);
       setAssignableOTMs(otms);
-      if (otms.length && !assigneeId) setAssigneeId(otms[0].id);
+      // Default to current user if they're an OTM and assigned
+      if (otms.length && !assigneeId) {
+        const isOTM = role === 'va' || role === 'otm';
+        if (isOTM && otms.find(o => o.id === profile?.id)) {
+          setAssigneeId(profile.id);
+        } else {
+          setAssigneeId(otms[0].id);
+        }
+      }
     }
     loadOTMs();
   }, [businessId]);
 
   useEffect(() => {
     if (!open) return;
-    // Prefer the selected business from header if available
-    const preferredId = presetBusinessId && businesses.find(b => b.id === presetBusinessId) ? presetBusinessId : (businesses[0]?.id || '');
+    const preferredId = presetBusinessId && businesses.find(b => b.id === presetBusinessId)
+      ? presetBusinessId
+      : (businesses[0]?.id || '');
     setBusinessId(preferredId);
     setTitle(''); setDescription(''); setDue(''); setAssigneeId(''); setPriority('normal'); setErr('');
   }, [open, businesses, presetBusinessId]);
@@ -252,6 +297,7 @@ function NewTaskModal({ open, onClose, role, profile, businesses, presetBusiness
       <div className="mb-3">
         <label className="field-label">Business</label>
         <select value={businessId} onChange={e => setBusinessId(e.target.value)}>
+          {businesses.length === 0 && <option value="">No businesses available</option>}
           {businesses.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
         </select>
         {selectedBiz && (

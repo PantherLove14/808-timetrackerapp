@@ -11,7 +11,15 @@ export function formatHours(hrs) {
 
 export function formatDate(iso) {
   if (!iso) return '—';
-  const d = new Date(iso);
+  // If the string is just YYYY-MM-DD (no time), parse as local date to avoid TZ shift
+  const s = String(iso);
+  let d;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [y, m, day] = s.split('-').map(Number);
+    d = new Date(y, m - 1, day);
+  } else {
+    d = new Date(s);
+  }
   if (isNaN(d)) return '—';
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
@@ -56,6 +64,10 @@ export function monthKey(d) {
 }
 
 export function formatMonthKey(iso) {
-  const d = new Date(iso);
+  // Parse YYYY-MM-DD as local date (NOT UTC) to avoid timezone shift bug
+  // where 2026-04-01 reads as March 31 in Western timezones
+  const s = String(iso).slice(0, 10);
+  const [y, m] = s.split('-').map(Number);
+  const d = new Date(y, (m || 1) - 1, 1);
   return d.toLocaleString('en-US', { month: 'long', year: 'numeric' });
 }
