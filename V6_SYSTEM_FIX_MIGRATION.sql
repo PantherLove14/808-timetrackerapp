@@ -64,6 +64,51 @@ drop function if exists public.list_client_tasks(uuid);
 drop function if exists public.get_business_default_assignee(uuid);
 
 -- ----------------------------------------------------------------------------
+-- A0. SELF-HEAL — ensure v5-added columns exist before any RPC that writes them
+--     (Defensive: if v5 wasn't applied or drifted, v6 still works.)
+-- ----------------------------------------------------------------------------
+do $$ begin
+  if not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'task_comments' and column_name = 'attachments'
+  ) then
+    alter table public.task_comments add column attachments jsonb;
+  end if;
+  if not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'task_comments' and column_name = 'reply_to_id'
+  ) then
+    alter table public.task_comments add column reply_to_id uuid references public.task_comments(id) on delete set null;
+  end if;
+  if not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'task_comments' and column_name = 'mentions'
+  ) then
+    alter table public.task_comments add column mentions uuid[];
+  end if;
+  if not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'task_comments' and column_name = 'system_message'
+  ) then
+    alter table public.task_comments add column system_message boolean not null default false;
+  end if;
+  if not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'task_comments' and column_name = 'edited_at'
+  ) then
+    alter table public.task_comments add column edited_at timestamptz;
+  end if;
+  -- Drop NOT NULL on body so file/voice-only messages work
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema='public' and table_name='task_comments'
+      and column_name='body' and is_nullable='NO'
+  ) then
+    alter table public.task_comments alter column body drop not null;
+  end if;
+end $$;
+
+-- ----------------------------------------------------------------------------
 -- A1. get_task_with_context — TYPE-CORRECTED
 -- ----------------------------------------------------------------------------
 create or replace function public.get_task_with_context(p_task_id uuid)
@@ -566,7 +611,8 @@ declare
   v_count int := 0;
 begin
   with single_otm_businesses as (
-    select va.business_id, max(va.va_id) as va_id
+    -- Only businesses with exactly ONE active assigned OTM
+    select va.business_id, min(va.va_id::text)::uuid as va_id
     from public.va_assignments va
     join public.users u on u.id = va.va_id
     where u.active = true
