@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { supabase, logAudit } from '../../lib/supabase';
 import PageHeader, { SectionTitle, Empty } from '../../components/PageHeader';
 import Modal from '../../components/Modal';
@@ -11,13 +11,19 @@ export default function AdminPayPage() {
   const [hours, setHours] = useState({});
   const [month, setMonth] = useState(monthKey(new Date()));
   const [stubs, setStubs] = useState([]);
+  const [allStubs, setAllStubs] = useState([]);
+  const [search, setSearch] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [loadError, setLoadError] = useState('');
 
   useEffect(() => { load(); }, [month]);
+  useEffect(() => { loadAllStubs(); }, []);
 
   async function load() {
-    const { data: us } = await supabase.from('users').select('*').eq('role', 'va').eq('active', true).order('name');
+    setLoadError('');
+    const { data: us, error: uErr } = await supabase.from('users').select('*').eq('role', 'va').eq('active', true).order('name');
+    if (uErr) setLoadError(uErr.message);
     setOTMs(us || []);
 
     const start = new Date(month + '-01').toISOString();
@@ -31,17 +37,48 @@ export default function AdminPayPage() {
     (entries || []).forEach(e => { h[e.user_id] = (h[e.user_id] || 0) + e.duration; });
     setHours(h);
 
-    const { data: s } = await supabase.from('pay_stubs').select('*, users(name)').eq('month', month + '-01').order('users(name)');
+    const { data: s } = await supabase.from('pay_stubs').select('*, users(name, email)').eq('month', month + '-01').order('users(name)');
     setStubs(s || []);
+  }
+
+  async function loadAllStubs() {
+    const { data } = await supabase.from('pay_stubs').select('*, users(name, email)').order('month', { ascending: false }).limit(200);
+    setAllStubs(data || []);
+  }
+
+  const filteredStubs = useMemo(() => {
+    if (!search.trim()) return allStubs;
+    const q = search.toLowerCase();
+    return allStubs.filter(s =>
+      (s.users?.name || '').toLowerCase().includes(q) ||
+      (s.users?.email || '').toLowerCase().includes(q) ||
+      formatMonthKey(s.month).toLowerCase().includes(q)
+    );
+  }, [allStubs, search]);
+
+  async function deleteStub(stub) {
+    if (!confirm(`Delete stub for ${stub.users?.name || 'OTM'} (${formatMonthKey(stub.month)})? This cannot be undone.`)) return;
+    const { error } = await supabase.from('pay_stubs').delete().eq('id', stub.id);
+    if (error) return alert(error.message);
+    await logAudit('pay_stub.delete', 'pay_stub', stub.id);
+    load();
+    loadAllStubs();
   }
 
   return (
     <div>
       <PageHeader kicker="Admin" title="OTM Pay & Stubs" subtitle="Pay calculations and downloadable monthly pay stubs." />
 
+      {loadError && (
+        <div className="panel mb-5" style={{ borderColor: 'var(--crimson)', background: 'rgba(168,4,4,0.06)' }}>
+          <div className="font-bebas tracking-widest text-xs text-crimson mb-1">LOAD ERROR</div>
+          <div className="text-sm">{loadError}</div>
+        </div>
+      )}
+
       <div className="panel mb-6">
-        <div className="flex justify-between items-center mb-5">
-          <div><SectionTitle kicker="Select a month">Pay period</SectionTitle></div>
+        <div className="flex justify-between items-center mb-5 flex-wrap gap-3">
+          <div><SectionTitle kicker="Generate stubs">Pay period</SectionTitle></div>
           <input type="month" className="input max-w-xs" value={month} onChange={e => setMonth(e.target.value)} />
         </div>
 
@@ -61,10 +98,11 @@ export default function AdminPayPage() {
                   <td>{v.hourly_rate ? `${formatMoney(v.hourly_rate)}/hr` : 'Rate not set'}</td>
                   <td>{formatMoney(basePay)}</td>
                   <td>{existing ? <span className="badge active">GENERATED</span> : <span className="badge pending">NOT YET</span>}</td>
-                  <td>
+                  <td className="whitespace-nowrap">
                     <button className="btn-sm ink" onClick={() => { setEditing({ ...v, hours: hr, existing }); setModalOpen(true); }}>
                       {existing ? 'EDIT STUB' : 'GENERATE STUB'}
                     </button>
+                    {existing && <> <button className="btn-sm" onClick={() => downloadStub(existing)}>Download</button></>}
                   </td>
                 </tr>
               );
@@ -74,25 +112,37 @@ export default function AdminPayPage() {
       </div>
 
       <div className="panel">
-        <SectionTitle kicker={`All stubs for ${formatMonthKey(month + '-01')}`}>Issued stubs</SectionTitle>
-        {stubs.length === 0 ? <Empty>No stubs generated yet for this month.</Empty> : (
+        <div className="flex justify-between items-center mb-3 flex-wrap gap-3">
+          <SectionTitle kicker="All issued stubs">Pay stub history</SectionTitle>
+          <input type="text" className="input max-w-xs" placeholder="Search by name, email, or month…" value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
+        {filteredStubs.length === 0 ? <Empty>{search ? `No stubs match "${search}".` : 'No stubs generated yet.'}</Empty> : (
           <table>
-            <thead><tr><th>OTM</th><th>Hours</th><th>Base</th><th>Bonus</th><th>Deductions</th><th>Net</th><th></th></tr></thead>
+            <thead><tr><th>OTM</th><th>Month</th><th>Hours</th><th>Base</th><th>Bonus</th><th>Deductions</th><th>Net</th><th>Generated</th><th></th></tr></thead>
             <tbody>
-              {stubs.map(s => (
+              {filteredStubs.map(s => (
                 <tr key={s.id}>
-                  <td>{s.users?.name || '—'}</td>
+                  <td>
+                    <strong>{s.users?.name || '—'}</strong>
+                    <div className="text-[11px] text-muted">{s.users?.email}</div>
+                  </td>
+                  <td>{formatMonthKey(s.month)}</td>
                   <td>{formatHours(s.hours_worked)}</td>
                   <td>{formatMoney(s.base_pay)}</td>
                   <td>{formatMoney(s.bonus || 0)}</td>
                   <td>{formatMoney(s.deductions || 0)}</td>
                   <td><strong>{formatMoney(s.net_pay)}</strong></td>
-                  <td><button className="btn-sm" onClick={() => downloadStub(s)}>Download PDF</button></td>
+                  <td className="text-xs text-muted">{s.generated_at ? new Date(s.generated_at).toLocaleDateString() : '—'}</td>
+                  <td className="whitespace-nowrap">
+                    <button className="btn-sm" onClick={() => downloadStub(s)}>Download</button>{' '}
+                    <button className="btn-sm danger" onClick={() => deleteStub(s)}>Delete</button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
+        <div className="text-xs text-muted mt-3">{filteredStubs.length} of {allStubs.length} total stubs shown.</div>
       </div>
 
       <PayStubModal
@@ -100,7 +150,7 @@ export default function AdminPayPage() {
         onClose={() => setModalOpen(false)}
         otm={editing}
         month={month}
-        onSaved={() => { setModalOpen(false); load(); }}
+        onSaved={() => { setModalOpen(false); load(); loadAllStubs(); }}
       />
     </div>
   );
@@ -136,7 +186,6 @@ function PayStubModal({ open, onClose, otm, month, onSaved }) {
     setErr('');
     if (!rate) return setErr('Hourly rate required.');
     const { data: { user } } = await supabase.auth.getUser();
-    const { data: me } = await supabase.from('users').select('id').eq('id', user.id).single();
     setBusy(true);
     const payload = {
       user_id: otm.id, month: month + '-01',
@@ -144,7 +193,8 @@ function PayStubModal({ open, onClose, otm, month, onSaved }) {
       base_pay: base,
       bonus: parseFloat(bonus) || 0,
       deductions: parseFloat(deductions) || 0,
-      net_pay: net, admin_notes: notes || null, generated_by: me.id
+      net_pay: net, admin_notes: notes || null, generated_by: user.id,
+      generated_at: new Date().toISOString()
     };
     const { error } = otm.existing
       ? await supabase.from('pay_stubs').update(payload).eq('id', otm.existing.id)
@@ -185,8 +235,10 @@ function PayStubModal({ open, onClose, otm, month, onSaved }) {
 }
 
 function downloadStub(stub) {
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Pay Stub</title>
-<style>body{font-family:'DM Sans',Arial,sans-serif;background:#fff6ea;padding:40px;color:#232323;}
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Pay Stub - ${stub.users?.name || 'OTM'} - ${new Date(stub.month).toLocaleString('en-US', { month: 'long', year: 'numeric' })}</title>
+<style>
+@page { margin: 0.5in; }
+body{font-family:'DM Sans',Arial,sans-serif;background:#fff6ea;padding:40px;color:#232323;margin:0;}
 .stub{max-width:640px;margin:0 auto;background:#fffdf8;border:1px solid #e6dcc6;padding:40px;}
 .head{border-bottom:3px solid #232323;padding-bottom:16px;margin-bottom:24px;}
 .brand{font-family:'Bebas Neue',Impact,sans-serif;font-size:24px;letter-spacing:0.14em;color:#232323;}
@@ -197,6 +249,10 @@ h1{font-family:Georgia,serif;font-size:28px;margin:0 0 4px 0;}
 .total{font-weight:bold;font-size:18px;padding-top:16px;border-top:2px solid #232323;}
 .notes{background:#f5ead5;border-left:3px solid #a80404;padding:12px;margin-top:20px;font-size:13px;}
 .foot{margin-top:32px;padding-top:16px;border-top:1px solid #e6dcc6;font-size:11px;color:#8a8070;}
+@media print {
+  body { background: white; padding: 0; }
+  .stub { border: 0; }
+}
 </style></head><body><div class="stub">
 <div class="head"><div class="brand">808 TALENT SOURCE</div><div class="sub">OTM Pay Stub</div></div>
 <div class="kicker">${new Date(stub.month).toLocaleString('en-US', { month: 'long', year: 'numeric' })}</div>
@@ -213,9 +269,15 @@ ${stub.admin_notes ? `<div class="notes"><strong>Notes from admin:</strong><br>$
 <div class="foot">
 © 2026 ${BRAND.companyName}. A brand of ${BRAND.parentCompany}. Confidential.<br>
 ${BRAND.addressLine1} • ${BRAND.addressLine2} • ${BRAND.phone}<br>
-Generated ${new Date(stub.generated_at).toLocaleString()}
-</div></div><script>window.print();</script></body></html>`;
+Generated ${stub.generated_at ? new Date(stub.generated_at).toLocaleString() : 'unknown'}
+</div></div>
+<script>setTimeout(()=>window.print(),300);</script>
+</body></html>`;
   const w = window.open('', '_blank');
+  if (!w) {
+    alert('Popup blocked. Please allow popups for this site to download stubs.');
+    return;
+  }
   w.document.write(html);
   w.document.close();
 }

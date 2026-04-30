@@ -4,6 +4,7 @@ import { signOut } from '../hooks/useAuth';
 import { supabase } from '../lib/supabase';
 import { BRAND } from '../lib/constants';
 import Logo from './Logo';
+import { Avatar } from './Avatar';
 import { BusinessHeaderBar } from './BusinessSelector';
 
 export default function Shell({ children, role, profile }) {
@@ -48,9 +49,7 @@ export default function Shell({ children, role, profile }) {
 
         <div className="flex items-center gap-3">
           <NavLink to="/profile" className="flex items-center gap-3 px-3 py-1.5 rounded-full border border-line bg-cream-deep hover:border-ink transition-colors">
-            <div className="w-8 h-8 rounded-full grid place-items-center text-cream font-bebas text-xs" style={{ background: isAdmin ? 'var(--crimson)' : 'var(--ink)' }}>
-              {initial}
-            </div>
+            <Avatar url={profile?.avatar_url} name={profile?.name || '?'} size={32} />
             <div className="text-left">
               <div className="text-sm font-medium leading-none">{profile?.name || '—'}</div>
               <div className="font-bebas text-[10px] tracking-widest text-crimson mt-0.5">{displayRole}</div>

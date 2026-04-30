@@ -1,121 +1,109 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase, logAudit } from '../lib/supabase';
 import PageHeader, { SectionTitle } from '../components/PageHeader';
-import Modal from '../components/Modal';
-import { formatDate } from '../lib/format';
+import { AvatarUploader } from '../components/Avatar';
+import { useToast } from '../components/BusinessSelector';
 
 export default function ProfilePage({ role, profile }) {
-  const [pwdOpen, setPwdOpen] = useState(false);
-
-  if (!profile) return null;
-
-  const displayRole = role === 'sub_admin' ? 'Sub-Admin'
-    : role === 'admin' ? 'Admin'
-    : role === 'va' ? 'VA / Contractor'
-    : 'Client';
-
-  return (
-    <div>
-      <PageHeader
-        kicker="Account"
-        title="My Profile"
-        subtitle="Your personal details and login."
-        right={<button className="btn-sm ink" onClick={() => setPwdOpen(true)}>CHANGE PASSWORD</button>}
-      />
-
-      <div className="panel mb-6">
-        <SectionTitle kicker="Contact">Personal</SectionTitle>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-          <Field label="Name" value={profile.name} />
-          <Field label="Email (login)" value={profile.email} />
-          <Field label="Phone" value={profile.phone || '—'} />
-          <Field label="Role" value={displayRole} />
-          {role === 'va' && <Field label="Start date" value={profile.start_date ? formatDate(profile.start_date) : '—'} />}
-          {role === 'va' && <Field label="Birthday" value={profile.birthday ? formatDate(profile.birthday) : '—'} />}
-          {role === 'va' && <Field label="Work anniversary" value={profile.work_anniversary ? formatDate(profile.work_anniversary) : '—'} />}
-          {role === 'va' && <Field label="Hourly rate" value={profile.hourly_rate ? `$${profile.hourly_rate}/hr` : '—'} />}
-          {role === 'client' && <Field label="Address" value={profile.address || '—'} />}
-          {role === 'client' && <Field label="Birthday" value={profile.birthday ? formatDate(profile.birthday) : '—'} />}
-        </div>
-      </div>
-
-      {role === 'va' && (profile.emergency_contact_name || profile.emergency_contact_phone) && (
-        <div className="panel mb-6">
-          <SectionTitle kicker="In case of emergency">Emergency contact</SectionTitle>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
-            <Field label="Name" value={profile.emergency_contact_name || '—'} />
-            <Field label="Phone" value={profile.emergency_contact_phone || '—'} />
-            <Field label="Relationship" value={profile.emergency_contact_relationship || '—'} />
-          </div>
-        </div>
-      )}
-
-      <div className="panel">
-        <SectionTitle kicker="Important">To update these fields</SectionTitle>
-        <p className="text-sm text-slate808 leading-relaxed">
-          Profile changes beyond your password are handled by your 808 administrator. Reach out to them directly for any updates to your rate, assignments, or personal details.
-        </p>
-      </div>
-
-      <ChangePasswordModal open={pwdOpen} onClose={() => setPwdOpen(false)} email={profile.email} />
-    </div>
-  );
-}
-
-function Field({ label, value }) {
-  return (
-    <div>
-      <div className="font-bebas text-[11px] tracking-widest text-crimson mb-1">{label}</div>
-      <div className="text-ink">{value}</div>
-    </div>
-  );
-}
-
-function ChangePasswordModal({ open, onClose, email }) {
-  const [currentPwd, setCurrentPwd] = useState('');
-  const [newPwd, setNewPwd] = useState('');
-  const [confirm, setConfirm] = useState('');
-  const [err, setErr] = useState('');
+  const [me, setMe] = useState(null);
+  const [editing, setEditing] = useState({});
   const [busy, setBusy] = useState(false);
+  const [pwd, setPwd] = useState({ current: '', next: '', confirm: '' });
+  const toast = useToast();
 
-  async function save() {
-    setErr('');
-    if (newPwd.length < 12) return setErr('New password must be at least 12 characters.');
-    if (newPwd !== confirm) return setErr('Passwords do not match.');
+  const isClient = role === 'client';
+  const tableName = isClient ? 'clients' : 'users';
 
-    setBusy(true);
-    // Re-authenticate with current password
-    const { error: signInErr } = await supabase.auth.signInWithPassword({ email, password: currentPwd });
-    if (signInErr) { setBusy(false); return setErr('Current password is incorrect.'); }
+  useEffect(() => { load(); }, [profile]);
 
-    const { error } = await supabase.auth.updateUser({ password: newPwd });
-    setBusy(false);
-    if (error) return setErr(error.message);
-    await logAudit('account.password_change', null, null, {});
-    setCurrentPwd(''); setNewPwd(''); setConfirm('');
-    onClose();
-    alert('Password updated.');
+  async function load() {
+    if (!profile) return;
+    const { data } = await supabase.from(tableName).select('*').eq('id', profile.id).single();
+    setMe(data);
+    setEditing({
+      name: data?.name || '',
+      phone: data?.phone || '',
+      address: data?.address || '',
+      birthday: data?.birthday || ''
+    });
   }
 
+  async function save() {
+    setBusy(true);
+    const payload = {
+      name: editing.name.trim(),
+      phone: editing.phone || null,
+      address: editing.address || null,
+      birthday: editing.birthday || null
+    };
+    const { error } = await supabase.from(tableName).update(payload).eq('id', profile.id);
+    setBusy(false);
+    if (error) return toast.show(error.message, 'error');
+    await logAudit('profile.update');
+    toast.show('Profile saved.');
+    load();
+  }
+
+  async function changePassword() {
+    if (!pwd.next) return toast.show('Enter a new password.', 'warn');
+    if (pwd.next.length < 12) return toast.show('Password must be at least 12 characters.', 'warn');
+    if (pwd.next !== pwd.confirm) return toast.show('Passwords do not match.', 'warn');
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password: pwd.next });
+    setBusy(false);
+    if (error) return toast.show(error.message, 'error');
+    await logAudit('profile.password_change');
+    toast.show('Password changed successfully.');
+    setPwd({ current: '', next: '', confirm: '' });
+  }
+
+  if (!me) return <div className="text-center py-20 text-muted">Loading…</div>;
+
   return (
-    <Modal open={open} onClose={onClose} title="Change password" subtitle="Use at least 12 characters. Mix letters, numbers, and symbols."
-      footer={<>
-        <button className="btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn-sm ink" onClick={save} disabled={busy}>{busy ? 'SAVING…' : 'UPDATE PASSWORD'}</button>
-      </>}>
-      <div className="mb-3">
-        <label className="field-label">Current password</label>
-        <input type="password" className="input" value={currentPwd} onChange={e => setCurrentPwd(e.target.value)} />
+    <div>
+      <PageHeader kicker="Account" title="My Profile" subtitle="Update your information and password." />
+
+      <div className="panel mb-6">
+        <SectionTitle kicker="Photo">Profile picture</SectionTitle>
+        <AvatarUploader
+          avatarUrl={me.avatar_url}
+          ownerType={isClient ? 'client' : 'user'}
+          ownerId={me.id}
+          name={me.name}
+          onChange={() => load()}
+        />
+        <div className="text-xs text-muted mt-3">Your photo is visible to admins, your assigned OTMs, and your clients (where applicable).</div>
       </div>
-      <div className="mb-3">
-        <label className="field-label">New password</label>
-        <input type="password" className="input" value={newPwd} onChange={e => setNewPwd(e.target.value)} />
+
+      <div className="panel mb-6">
+        <SectionTitle kicker="Contact">Personal info</SectionTitle>
+        <div className="grid grid-cols-2 gap-3 mb-3">
+          <div><label className="field-label">Full name</label><input className="input" value={editing.name} onChange={e => setEditing({ ...editing, name: e.target.value })} /></div>
+          <div><label className="field-label">Email</label><input className="input" value={me.email} disabled /></div>
+          <div><label className="field-label">Phone</label><input className="input" value={editing.phone} onChange={e => setEditing({ ...editing, phone: e.target.value })} /></div>
+          <div><label className="field-label">Birthday</label><input type="date" className="input" value={editing.birthday} onChange={e => setEditing({ ...editing, birthday: e.target.value })} /></div>
+        </div>
+        <div className="mb-3">
+          <label className="field-label">Address</label>
+          <input className="input" value={editing.address} onChange={e => setEditing({ ...editing, address: e.target.value })} />
+        </div>
+        <button className="btn-sm ink" onClick={save} disabled={busy}>{busy ? 'SAVING…' : 'SAVE PROFILE'}</button>
       </div>
-      <div>
-        <label className="field-label">Confirm new password</label>
-        <input type="password" className="input" value={confirm} onChange={e => setConfirm(e.target.value)} />
+
+      <div className="panel">
+        <SectionTitle kicker="Security">Change password</SectionTitle>
+        <div className="grid grid-cols-2 gap-3 mb-3 max-w-lg">
+          <div className="col-span-2">
+            <label className="field-label">New password (min 12 chars)</label>
+            <input type="password" className="input" value={pwd.next} onChange={e => setPwd({ ...pwd, next: e.target.value })} />
+          </div>
+          <div className="col-span-2">
+            <label className="field-label">Confirm new password</label>
+            <input type="password" className="input" value={pwd.confirm} onChange={e => setPwd({ ...pwd, confirm: e.target.value })} />
+          </div>
+        </div>
+        <button className="btn-sm" onClick={changePassword} disabled={busy}>CHANGE PASSWORD</button>
       </div>
-      {err && <div className="text-sm text-crimson mt-3 p-2 bg-crimson/5 border border-crimson/20 rounded">{err}</div>}
-    </Modal>
+    </div>
   );
 }

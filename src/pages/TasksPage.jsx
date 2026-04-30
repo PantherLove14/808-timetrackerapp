@@ -4,6 +4,7 @@ import { supabase, logAudit } from '../lib/supabase';
 import PageHeader from '../components/PageHeader';
 import Modal from '../components/Modal';
 import { useBusinesses, useToast } from '../components/BusinessSelector';
+import { FileAttachPicker, uploadFilesToStorage } from '../components/MediaUploader';
 import { getBusinessColor, businessDot } from '../lib/businessColor';
 
 const STATUS_COLS = [
@@ -17,6 +18,7 @@ export default function TasksPage({ role, profile }) {
   const [tasks, setTasks] = useState([]);
   const [unreadByTask, setUnreadByTask] = useState({});
   const [newOpen, setNewOpen] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const nav = useNavigate();
   const toast = useToast();
   const { businesses, selected, selectedId } = useBusinesses();
@@ -24,13 +26,13 @@ export default function TasksPage({ role, profile }) {
   useEffect(() => { loadAll(); }, [role, profile]);
 
   async function loadAll() {
-    let tq = supabase.from('tasks')
+    setLoadError('');
+    const { data: t, error: tErr } = await supabase.from('tasks')
       .select('*, businesses(name, client_id, clients(name)), users!tasks_assignee_id_fkey(name)')
       .order('created_at', { ascending: false });
-    const { data: t } = await tq;
+    if (tErr) setLoadError(tErr.message);
     setTasks(t || []);
 
-    // Unread comment counts (per task) for current user
     if (profile && t?.length) {
       const taskIds = t.map(x => x.id);
       const [{ data: allComments }, { data: reads }] = await Promise.all([
@@ -40,7 +42,7 @@ export default function TasksPage({ role, profile }) {
       const readSet = new Set((reads || []).map(r => r.comment_id));
       const counts = {};
       (allComments || []).forEach(c => {
-        if (c.author_id === profile.id) return; // own comments don't count
+        if (c.author_id === profile.id) return;
         if (readSet.has(c.id)) return;
         counts[c.task_id] = (counts[c.task_id] || 0) + 1;
       });
@@ -62,14 +64,12 @@ export default function TasksPage({ role, profile }) {
         }).eq('id', taskId);
         if (error) return toast.show(error.message, 'error');
         await logAudit('task.revision_requested', 'task', taskId, { reason });
-        toast.show(`Revision requested on "${task.title}" for ${task.businesses?.name}. ${task.users?.name || 'The OTM'} will be notified.`);
+        toast.show(`Revision requested on "${task.title}" for ${task.businesses?.name}.`);
         loadAll();
         return;
       }
       if (newStatus === 'approved') {
-        const { error } = await supabase.from('tasks').update({
-          status: 'approved', approved_at: new Date().toISOString()
-        }).eq('id', taskId);
+        const { error } = await supabase.from('tasks').update({ status: 'approved', approved_at: new Date().toISOString() }).eq('id', taskId);
         if (error) return toast.show(error.message, 'error');
         await logAudit('task.approved', 'task', taskId);
         toast.show(`"${task.title}" approved for ${task.businesses?.name}.`);
@@ -100,10 +100,7 @@ export default function TasksPage({ role, profile }) {
     });
   }
 
-  // EVERY role can create tasks now (OTMs included)
-  const canCreate = true;
   const ts = filtered();
-  const isOTM = role === 'va' || role === 'otm';
 
   return (
     <div>
@@ -111,11 +108,18 @@ export default function TasksPage({ role, profile }) {
         kicker="Execute"
         title="Tasks"
         subtitle={selected ? `Tasks for ${selected.name}.` : 'All tasks across your businesses.'}
-        right={canCreate && <>
+        right={<>
           <button className="btn-sm" onClick={loadAll}>↻ Refresh</button>{' '}
           <button className="btn-sm ink" onClick={() => setNewOpen(true)}>+ NEW TASK</button>
         </>}
       />
+
+      {loadError && (
+        <div className="panel mb-5" style={{ borderColor: 'var(--crimson)', background: 'rgba(168,4,4,0.06)' }}>
+          <div className="font-bebas tracking-widest text-xs text-crimson mb-1">LOAD ERROR</div>
+          <div className="text-sm">{loadError}</div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {STATUS_COLS.map(col => {
@@ -131,10 +135,7 @@ export default function TasksPage({ role, profile }) {
               ) : (
                 colTasks.map(t => (
                   <TaskCard
-                    key={t.id}
-                    task={t}
-                    role={role}
-                    profile={profile}
+                    key={t.id} task={t} role={role} profile={profile}
                     unread={unreadByTask[t.id] || 0}
                     onClick={() => nav(`/tasks/${t.id}`)}
                     onStatusChange={updateStatus}
@@ -162,8 +163,7 @@ export default function TasksPage({ role, profile }) {
       <NewTaskModal
         open={newOpen}
         onClose={() => setNewOpen(false)}
-        role={role}
-        profile={profile}
+        role={role} profile={profile}
         businesses={businesses}
         presetBusinessId={selected?.id}
         onCreated={() => { setNewOpen(false); loadAll(); }}
@@ -222,6 +222,7 @@ function NewTaskModal({ open, onClose, role, profile, businesses, presetBusiness
   const [due, setDue] = useState('');
   const [priority, setPriority] = useState('normal');
   const [assignableOTMs, setAssignableOTMs] = useState([]);
+  const [pendingFiles, setPendingFiles] = useState([]);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const toast = useToast();
@@ -229,13 +230,9 @@ function NewTaskModal({ open, onClose, role, profile, businesses, presetBusiness
   useEffect(() => {
     async function loadOTMs() {
       if (!businessId) { setAssignableOTMs([]); return; }
-      const { data: a } = await supabase
-        .from('va_assignments')
-        .select('va_id, users!inner(id, name, active)')
-        .eq('business_id', businessId);
+      const { data: a } = await supabase.from('va_assignments').select('va_id, users!inner(id, name, active)').eq('business_id', businessId);
       const otms = (a || []).filter(x => x.users?.active).map(x => x.users);
       setAssignableOTMs(otms);
-      // Default to current user if they're an OTM and assigned
       if (otms.length && !assigneeId) {
         const isOTM = role === 'va' || role === 'otm';
         if (isOTM && otms.find(o => o.id === profile?.id)) {
@@ -251,10 +248,10 @@ function NewTaskModal({ open, onClose, role, profile, businesses, presetBusiness
   useEffect(() => {
     if (!open) return;
     const preferredId = presetBusinessId && businesses.find(b => b.id === presetBusinessId)
-      ? presetBusinessId
-      : (businesses[0]?.id || '');
+      ? presetBusinessId : (businesses[0]?.id || '');
     setBusinessId(preferredId);
-    setTitle(''); setDescription(''); setDue(''); setAssigneeId(''); setPriority('normal'); setErr('');
+    setTitle(''); setDescription(''); setDue(''); setAssigneeId(''); setPriority('normal');
+    setPendingFiles([]); setErr('');
   }, [open, businesses, presetBusinessId]);
 
   async function save() {
@@ -269,12 +266,29 @@ function NewTaskModal({ open, onClose, role, profile, businesses, presetBusiness
       title: title.trim(), description: description.trim(),
       due_date: due || null, priority, status: 'todo'
     }).select('*, businesses(name), users!tasks_assignee_id_fkey(name)').single();
-    setBusy(false);
-    if (error) return setErr(error.message);
+    if (error) { setBusy(false); return setErr(error.message); }
+
+    // Upload any attachments
+    if (pendingFiles.length > 0) {
+      const results = await uploadFilesToStorage('task-attachments', pendingFiles, `tasks/${data.id}`);
+      const rows = results.filter(r => r.path).map(r => ({
+        task_id: data.id,
+        uploaded_by: user.id,
+        file_name: r.file.name,
+        file_path: r.path,
+        file_size: r.file.size,
+        mime_type: r.file.type
+      }));
+      if (rows.length > 0) {
+        await supabase.from('task_attachments').insert(rows);
+      }
+    }
+
     await logAudit('task.create', 'task', data.id, { title });
+    setBusy(false);
     const bizName = data.businesses?.name;
     const otmName = data.users?.name || 'Unassigned';
-    toast.show(`"${title}" created for ${bizName} → ${otmName}.`);
+    toast.show(`"${title}" created for ${bizName} → ${otmName}${pendingFiles.length > 0 ? ` with ${pendingFiles.length} file(s)` : ''}.`);
     onCreated();
   }
 
@@ -315,7 +329,7 @@ function NewTaskModal({ open, onClose, role, profile, businesses, presetBusiness
         </select>
         <div className="text-xs text-muted mt-1">Only OTMs assigned to this business appear here.</div>
       </div>
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 gap-3 mb-3">
         <div><label className="field-label">Due date</label><input type="date" className="input" value={due} onChange={e => setDue(e.target.value)} /></div>
         <div>
           <label className="field-label">Priority</label>
@@ -326,6 +340,11 @@ function NewTaskModal({ open, onClose, role, profile, businesses, presetBusiness
             <option value="urgent">Urgent</option>
           </select>
         </div>
+      </div>
+      <div className="mb-3">
+        <label className="field-label">Attachments (optional)</label>
+        <FileAttachPicker files={pendingFiles} onChange={setPendingFiles} disabled={busy} />
+        <div className="text-xs text-muted mt-1">Reference files: images, video, audio, PDFs, docs. Max 100 MB each.</div>
       </div>
       {err && <div className="text-sm text-crimson mt-3">{err}</div>}
     </Modal>

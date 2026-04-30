@@ -3,6 +3,7 @@ import { supabase, logAudit } from '../../lib/supabase';
 import PageHeader, { Empty, SectionTitle } from '../../components/PageHeader';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/BusinessSelector';
+import { Avatar, AvatarUploader } from '../../components/Avatar';
 import { formatDate, formatDuration, startOfWeek } from '../../lib/format';
 
 export default function AdminTeamPage() {
@@ -70,11 +71,12 @@ export default function AdminTeamPage() {
         ) : (
           <table>
             <thead>
-              <tr><th>Name</th><th>Email</th><th>Role</th><th>Rate</th><th>Week hours</th><th>Status</th><th></th></tr>
+              <tr><th></th><th>Name</th><th>Email</th><th>Role</th><th>Rate</th><th>Week hours</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
               {users.map(u => (
                 <tr key={u.id}>
+                  <td><Avatar url={u.avatar_url} name={u.name} size={36} /></td>
                   <td><strong>{u.name}</strong></td>
                   <td className="text-slate808">{u.email}</td>
                   <td><span className={`badge ${u.role === 'admin' ? 'ink' : 'active'}`}>
@@ -353,7 +355,20 @@ function UserModal({ open, onClose, editing, onSaved }) {
         </div>
       )}
 
-      <div className="font-bebas text-[11px] tracking-widest text-crimson mb-3">CONTACT & HR</div>
+      {editing && (
+        <>
+          <div className="font-bebas text-[11px] tracking-widest text-crimson mb-3 mt-4">PROFILE PHOTO</div>
+          <AvatarUploader
+            avatarUrl={editing.avatar_url}
+            ownerType="user"
+            ownerId={editing.id}
+            name={editing.name}
+            onChange={(newUrl) => { editing.avatar_url = newUrl; }}
+          />
+        </>
+      )}
+
+      <div className="font-bebas text-[11px] tracking-widest text-crimson mb-3 mt-4">CONTACT & HR</div>
       <div className="grid grid-cols-2 gap-3 mb-3">
         <div><label className="field-label">Phone</label><input className="input" {...f('phone')} placeholder="555-555-5555" /></div>
         <div><label className="field-label">Start date</label><input type="date" className="input" {...f('start_date')} /></div>

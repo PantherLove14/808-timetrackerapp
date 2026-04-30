@@ -3,6 +3,8 @@ import { useParams, Link } from 'react-router-dom';
 import { supabase, logAudit } from '../lib/supabase';
 import PageHeader, { SectionTitle, Empty } from '../components/PageHeader';
 import { useToast } from '../components/BusinessSelector';
+import { Avatar } from '../components/Avatar';
+import { VoiceRecorder, FileAttachPicker, uploadFilesToStorage } from '../components/MediaUploader';
 import { getBusinessColor, businessDot } from '../lib/businessColor';
 import { formatDateTime } from '../lib/format';
 
@@ -13,6 +15,9 @@ export default function TaskDetailPage({ role, profile }) {
   const [comments, setComments] = useState([]);
   const [attachments, setAttachments] = useState([]);
   const [newComment, setNewComment] = useState('');
+  const [pendingFiles, setPendingFiles] = useState([]);
+  const [pendingVoice, setPendingVoice] = useState(null);
+  const [posting, setPosting] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef(null);
   const audioInputRef = useRef(null);
@@ -20,17 +25,15 @@ export default function TaskDetailPage({ role, profile }) {
 
   useEffect(() => { load(); }, [taskId]);
 
-  // Mark all comments as read by current user when they view
+  // Mark comments read
   useEffect(() => {
     if (!profile || comments.length === 0) return;
     const otherComments = comments.filter(c => c.author_id !== profile.id);
     if (otherComments.length === 0) return;
     const rows = otherComments.map(c => ({ comment_id: c.id, user_id: profile.id }));
-    // upsert (ignore conflict on PK)
     supabase.from('task_comment_reads').upsert(rows, { onConflict: 'comment_id,user_id' }).then(() => {});
   }, [comments, profile]);
 
-  // Scroll comments to bottom on load
   useEffect(() => {
     if (commentsEndRef.current) commentsEndRef.current.scrollIntoView({ behavior: 'smooth' });
   }, [comments.length]);
@@ -38,7 +41,7 @@ export default function TaskDetailPage({ role, profile }) {
   async function load() {
     const { data: t } = await supabase
       .from('tasks')
-      .select('*, businesses(name, client_id, clients(name)), users!tasks_assignee_id_fkey(name), creator:users!tasks_created_by_fkey(name)')
+      .select('*, businesses(name, client_id, clients(name)), users!tasks_assignee_id_fkey(name, avatar_url), creator:users!tasks_created_by_fkey(name, avatar_url)')
       .eq('id', taskId).single();
     setTask(t);
 
@@ -49,7 +52,7 @@ export default function TaskDetailPage({ role, profile }) {
     setAttachments(a || []);
   }
 
-  async function uploadFile(file, isAudio = false) {
+  async function uploadTaskFile(file, isAudio = false) {
     if (!file) return;
     if (file.size > 100 * 1024 * 1024) { toast.show('Max file size is 100MB.', 'error'); return; }
     setUploading(true);
@@ -81,20 +84,56 @@ export default function TaskDetailPage({ role, profile }) {
   }
 
   async function postComment() {
-    if (!newComment.trim()) return;
+    if (!newComment.trim() && !pendingVoice && pendingFiles.length === 0) {
+      toast.show('Add a message, voice note, or attachment.', 'warn');
+      return;
+    }
+    setPosting(true);
     const { data: { user } } = await supabase.auth.getUser();
-    const { error } = await supabase.from('task_comments').insert({
-      task_id: taskId, author_id: user.id,
-      author_name: profile.name, author_role: role === 'otm' ? 'va' : role,
-      body: newComment.trim()
-    });
-    if (error) return toast.show(error.message, 'error');
+
+    // Upload pending files first
+    const allFiles = [...pendingFiles];
+    if (pendingVoice) allFiles.push(pendingVoice);
+
+    let uploadedAttachments = [];
+    if (allFiles.length > 0) {
+      const results = await uploadFilesToStorage('task-attachments', allFiles, `tasks/${taskId}/comments`);
+      const failed = results.filter(r => r.error);
+      if (failed.length) {
+        setPosting(false);
+        toast.show(`Upload failed: ${failed[0].error}`, 'error');
+        return;
+      }
+      uploadedAttachments = results.map(r => ({
+        file_name: r.file.name,
+        file_path: r.path,
+        file_size: r.file.size,
+        mime_type: r.file.type
+      }));
+    }
+
+    // Insert comment with attachments JSON
+    const { data: created, error } = await supabase.from('task_comments').insert({
+      task_id: taskId,
+      author_id: user.id,
+      author_name: profile.name,
+      author_role: role === 'otm' ? 'va' : role,
+      body: newComment.trim() || null,
+      attachments: uploadedAttachments.length > 0 ? uploadedAttachments : null
+    }).select().single();
+
+    setPosting(false);
+    if (error) { toast.show(error.message, 'error'); return; }
+
     await logAudit('task.comment', 'task', taskId);
     const recipient = role === 'client'
       ? (task.users?.name || 'the OTM')
       : (task.businesses?.clients?.name || 'the client');
-    toast.show(`Comment posted on ${task.businesses?.name}. ${recipient} will see it.`);
+    toast.show(`Message posted on ${task.businesses?.name}. ${recipient} will see it.`);
+
     setNewComment('');
+    setPendingFiles([]);
+    setPendingVoice(null);
     load();
   }
 
@@ -210,15 +249,11 @@ export default function TaskDetailPage({ role, profile }) {
       <div className="panel mb-6">
         <div className="flex justify-between items-start mb-3">
           <SectionTitle kicker="Listen">Audio instructions</SectionTitle>
-          {(isAdmin || role === 'client') && (
-            <>
-              <input type="file" accept="audio/*" ref={audioInputRef} style={{ display: 'none' }}
-                onChange={e => e.target.files[0] && uploadFile(e.target.files[0], true)} />
-              <button className="btn-sm" onClick={() => audioInputRef.current?.click()} disabled={uploading}>
-                {uploading ? 'UPLOADING…' : (task.audio_instruction_url ? 'REPLACE AUDIO' : '+ UPLOAD AUDIO')}
-              </button>
-            </>
-          )}
+          <input type="file" accept="audio/*" ref={audioInputRef} style={{ display: 'none' }}
+            onChange={e => e.target.files[0] && uploadTaskFile(e.target.files[0], true)} />
+          <button className="btn-sm" onClick={() => audioInputRef.current?.click()} disabled={uploading}>
+            {uploading ? 'UPLOADING…' : (task.audio_instruction_url ? 'REPLACE AUDIO' : '+ UPLOAD AUDIO')}
+          </button>
         </div>
         {task.audio_instruction_url ? <AudioPlayer path={task.audio_instruction_url} /> : (
           <div className="text-muted text-sm italic">No audio instructions.</div>
@@ -227,9 +262,9 @@ export default function TaskDetailPage({ role, profile }) {
 
       <div className="panel mb-6">
         <div className="flex justify-between items-start mb-3">
-          <SectionTitle kicker="Files">Attachments</SectionTitle>
+          <SectionTitle kicker="Files">Task attachments</SectionTitle>
           <input type="file" ref={fileInputRef} style={{ display: 'none' }}
-            onChange={e => e.target.files[0] && uploadFile(e.target.files[0])} />
+            onChange={e => e.target.files[0] && uploadTaskFile(e.target.files[0])} />
           <button className="btn-sm ink" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
             {uploading ? 'UPLOADING…' : '+ UPLOAD FILE'}
           </button>
@@ -253,29 +288,14 @@ export default function TaskDetailPage({ role, profile }) {
 
       <div className="panel">
         <SectionTitle kicker="Communication">Conversation</SectionTitle>
-        <div className="text-xs text-muted mb-4">All messages here are visible to admins, the assigned OTM, and the business client. {comments.length} message{comments.length === 1 ? '' : 's'}.</div>
+        <div className="text-xs text-muted mb-4">
+          All messages here are visible to admins, the assigned OTM, and the business client. Send text, files, video, voice notes — whatever helps. {comments.length} message{comments.length === 1 ? '' : 's'}.
+        </div>
 
-        <div className="bg-cream-deep border border-line rounded p-3 max-h-[450px] overflow-y-auto mb-4">
+        <div className="bg-cream-deep border border-line rounded p-3 max-h-[500px] overflow-y-auto mb-4">
           {comments.length === 0 ? (
             <div className="text-center py-6 text-muted italic text-sm">No messages yet. Start the conversation below.</div>
-          ) : comments.map(c => {
-            const mine = c.author_id === profile?.id;
-            const roleColors = { admin: 'var(--ink)', sub_admin: 'var(--ink)', va: 'var(--crimson)', client: 'var(--navy, #1e3a5f)' };
-            const roleLabel = c.author_role === 'va' ? 'OTM' : c.author_role.toUpperCase().replace('_', '-');
-            return (
-              <div key={c.id} className={`mb-3 flex ${mine ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[78%] ${mine ? 'bg-paper border border-line' : 'bg-paper border border-line'} rounded-lg p-3 shadow-sm`}
-                  style={mine ? { borderLeft: '3px solid var(--ok)' } : { borderLeft: `3px solid ${roleColors[c.author_role] || 'var(--slate)'}` }}>
-                  <div className="flex items-baseline gap-2 mb-1 flex-wrap">
-                    <strong className="text-sm">{mine ? 'You' : c.author_name}</strong>
-                    <span className="badge text-[9px]" style={{ background: roleColors[c.author_role] || 'var(--slate)', color: 'var(--cream)' }}>{roleLabel}</span>
-                    <span className="text-[10px] text-muted">{formatDateTime(c.created_at)}</span>
-                  </div>
-                  <div className="text-sm text-ink whitespace-pre-wrap">{c.body}</div>
-                </div>
-              </div>
-            );
-          })}
+          ) : comments.map(c => <CommentBubble key={c.id} c={c} profile={profile} />)}
           <div ref={commentsEndRef} />
         </div>
 
@@ -285,13 +305,11 @@ export default function TaskDetailPage({ role, profile }) {
             rows="3"
             value={newComment}
             onChange={e => setNewComment(e.target.value)}
-            placeholder={`Write a message to ${
-              role === 'client'
-                ? (task.users?.name || 'the OTM')
-                : role === 'admin' || role === 'sub_admin'
-                  ? 'the team'
-                  : (task.businesses?.clients?.name || 'the client')
-            }...`}
+            placeholder={`Write a message${
+              role === 'client' ? ` to ${task.users?.name || 'the OTM'}` :
+              role === 'admin' || role === 'sub_admin' ? '' :
+              task.businesses?.clients?.name ? ` to ${task.businesses.clients.name}` : ''
+            }... (text, files, voice — all optional)`}
             onKeyDown={e => {
               if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                 e.preventDefault();
@@ -299,13 +317,104 @@ export default function TaskDetailPage({ role, profile }) {
               }
             }}
           />
-          <div className="flex justify-between items-center mt-2">
-            <div className="text-[10px] text-muted">Press Cmd/Ctrl+Enter to send.</div>
-            <button className="btn-sm ink" onClick={postComment} disabled={!newComment.trim()}>SEND MESSAGE</button>
+
+          <div className="flex flex-wrap gap-2 mt-2 items-center justify-between">
+            <div className="flex flex-wrap gap-2 items-center">
+              <FileAttachPicker files={pendingFiles} onChange={setPendingFiles} disabled={posting} />
+              <VoiceRecorder onRecorded={setPendingVoice} disabled={posting} />
+              {pendingVoice && (
+                <span className="text-xs bg-cream-deep border border-line rounded px-2 py-1 flex items-center gap-2">
+                  🎵 Voice note ready
+                  <button onClick={() => setPendingVoice(null)} className="text-crimson">✕</button>
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="text-[10px] text-muted">Cmd/Ctrl+Enter to send</div>
+              <button className="btn-sm ink" onClick={postComment} disabled={posting}>
+                {posting ? 'SENDING…' : 'SEND MESSAGE'}
+              </button>
+            </div>
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+function CommentBubble({ c, profile }) {
+  const mine = c.author_id === profile?.id;
+  const roleColors = { admin: 'var(--ink)', sub_admin: 'var(--ink)', va: 'var(--crimson)', client: '#1e3a5f' };
+  const roleLabel = c.author_role === 'va' ? 'OTM' : (c.author_role || '').toUpperCase().replace('_', '-');
+  const accent = roleColors[c.author_role] || 'var(--slate)';
+
+  return (
+    <div className={`mb-3 flex ${mine ? 'justify-end' : 'justify-start'}`}>
+      <div className="max-w-[78%] bg-paper border border-line rounded-lg p-3 shadow-sm"
+        style={mine ? { borderLeft: '3px solid var(--ok)' } : { borderLeft: `3px solid ${accent}` }}>
+        <div className="flex items-baseline gap-2 mb-1 flex-wrap">
+          <strong className="text-sm">{mine ? 'You' : c.author_name}</strong>
+          <span className="badge text-[9px]" style={{ background: accent, color: 'var(--cream)' }}>{roleLabel}</span>
+          <span className="text-[10px] text-muted">{formatDateTime(c.created_at)}</span>
+        </div>
+        {c.body && <div className="text-sm text-ink whitespace-pre-wrap">{c.body}</div>}
+        {c.attachments && c.attachments.length > 0 && (
+          <div className="mt-2 flex flex-col gap-2">
+            {c.attachments.map((a, i) => <CommentAttachment key={i} a={a} />)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CommentAttachment({ a }) {
+  const [url, setUrl] = useState(null);
+  useEffect(() => {
+    let active = true;
+    supabase.storage.from('task-attachments').createSignedUrl(a.file_path, 3600).then(({ data }) => {
+      if (active && data) setUrl(data.signedUrl);
+    });
+    return () => { active = false; };
+  }, [a.file_path]);
+
+  const isImage = (a.mime_type || '').startsWith('image/');
+  const isVideo = (a.mime_type || '').startsWith('video/');
+  const isAudio = (a.mime_type || '').startsWith('audio/');
+
+  if (!url) return <div className="text-xs text-muted">Loading {a.file_name}…</div>;
+
+  if (isImage) {
+    return (
+      <div>
+        <a href={url} target="_blank" rel="noreferrer">
+          <img src={url} alt={a.file_name} style={{ maxWidth: 320, maxHeight: 240, borderRadius: 4, display: 'block' }} />
+        </a>
+        <div className="text-[10px] text-muted mt-1">{a.file_name}</div>
+      </div>
+    );
+  }
+  if (isVideo) {
+    return (
+      <div>
+        <video controls src={url} style={{ maxWidth: 360, maxHeight: 240, borderRadius: 4 }} />
+        <div className="text-[10px] text-muted mt-1">{a.file_name}</div>
+      </div>
+    );
+  }
+  if (isAudio) {
+    return (
+      <div>
+        <audio controls src={url} style={{ width: '100%', maxWidth: 360 }} />
+        <div className="text-[10px] text-muted mt-1">{a.file_name}</div>
+      </div>
+    );
+  }
+  return (
+    <a href={url} target="_blank" rel="noreferrer" className="bg-cream-deep border border-line rounded px-2 py-1 text-xs inline-flex items-center gap-2 hover:border-ink w-fit">
+      📎 {a.file_name}
+      <span className="text-muted">({(a.file_size / 1024).toFixed(0)} KB)</span>
+    </a>
   );
 }
 

@@ -12,10 +12,12 @@ export default function TimeTrackerPage({ role, profile }) {
 
   const [myTimeOff, setMyTimeOff] = useState([]);
   const [manualThisMonth, setManualThisMonth] = useState(null);
+  const [myTasks, setMyTasks] = useState([]);
 
   const [running, setRunning] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [description, setDescription] = useState('');
+  const [taskId, setTaskId] = useState('');
   const startRef = useRef(null);
   const intervalRef = useRef(null);
   const lastActivityRef = useRef(Date.now());
@@ -26,6 +28,7 @@ export default function TimeTrackerPage({ role, profile }) {
   const [timeOffOpen, setTimeOffOpen] = useState(false);
 
   useEffect(() => { loadData(); }, [profile]);
+  useEffect(() => { loadTasks(); }, [profile, selectedId]);
 
   async function loadData() {
     if (!profile) return;
@@ -41,6 +44,20 @@ export default function TimeTrackerPage({ role, profile }) {
     setMyTimeOff(to || []);
   }
 
+  async function loadTasks() {
+    if (!profile) return;
+    const isOTM = role === 'va' || role === 'otm';
+    if (!isOTM) { setMyTasks([]); return; }
+    let q = supabase.from('tasks')
+      .select('id, title, business_id, status, businesses(name)')
+      .eq('assignee_id', profile.id)
+      .in('status', ['todo', 'in_progress', 'revision_requested'])
+      .order('created_at', { ascending: false });
+    if (selectedId !== 'all') q = q.eq('business_id', selectedId);
+    const { data } = await q;
+    setMyTasks(data || []);
+  }
+
   function startTimer() {
     if (!selected) { toast.show('Pick a business from the header bar first.', 'warn'); return; }
     startRef.current = Date.now();
@@ -49,6 +66,12 @@ export default function TimeTrackerPage({ role, profile }) {
     setElapsed(0);
     lastActivityRef.current = Date.now();
     setIdleAlert(false);
+
+    // If a task is selected and no description yet, prefill from task title
+    if (taskId && !description) {
+      const t = myTasks.find(x => x.id === taskId);
+      if (t) setDescription(t.title);
+    }
 
     intervalRef.current = setInterval(() => {
       setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
@@ -78,6 +101,7 @@ export default function TimeTrackerPage({ role, profile }) {
     const { error } = await supabase.from('time_entries').insert({
       user_id: profile.id,
       business_id: bizForSave.id,
+      task_id: taskId || null,
       description: description.trim() || '(no description)',
       duration,
       date: new Date().toISOString(),
@@ -88,6 +112,7 @@ export default function TimeTrackerPage({ role, profile }) {
     toast.show(`${formatDuration(duration)} logged for ${bizForSave.name}.`);
     cleanupTimer();
     setDescription('');
+    setTaskId('');
     loadData();
   }
 
@@ -105,6 +130,16 @@ export default function TimeTrackerPage({ role, profile }) {
 
   useEffect(() => () => { cleanupTimer(); setTimerActive(false); }, []);
 
+  // When user picks a task from dropdown, auto-fill description if blank
+  function handleTaskChange(e) {
+    const val = e.target.value;
+    setTaskId(val);
+    if (val && !description.trim()) {
+      const t = myTasks.find(x => x.id === val);
+      if (t) setDescription(t.title);
+    }
+  }
+
   const h = Math.floor(elapsed / 3600);
   const m = Math.floor((elapsed % 3600) / 60);
   const s = elapsed % 60;
@@ -112,6 +147,13 @@ export default function TimeTrackerPage({ role, profile }) {
 
   const nextMonthName = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1)
     .toLocaleString('en-US', { month: 'long' });
+
+  const isOTM = role === 'va' || role === 'otm';
+
+  // Filter tasks by selected business if a specific one chosen
+  const tasksForDropdown = selectedId === 'all'
+    ? myTasks
+    : myTasks.filter(t => t.business_id === selectedId);
 
   return (
     <div>
@@ -165,6 +207,20 @@ export default function TimeTrackerPage({ role, profile }) {
                 </div>
               </div>
             )}
+            {isOTM && tasksForDropdown.length > 0 && (
+              <div className="mb-3">
+                <label className="field-label">Working on which task?</label>
+                <select value={taskId} onChange={handleTaskChange}>
+                  <option value="">— No specific task —</option>
+                  {tasksForDropdown.map(t => (
+                    <option key={t.id} value={t.id}>
+                      {t.title}{selectedId === 'all' ? ` — ${t.businesses?.name}` : ''}
+                    </option>
+                  ))}
+                </select>
+                <div className="text-xs text-muted mt-1">Picking a task auto-fills the description below and links your time to it.</div>
+              </div>
+            )}
             <div>
               <label className="field-label">What are you working on?</label>
               <input className="input" value={description} onChange={e => setDescription(e.target.value)} placeholder="Brief description of your work..." />
@@ -215,27 +271,15 @@ export default function TimeTrackerPage({ role, profile }) {
         )}
       </div>
 
-      <ManualEntryModal
-        open={manualOpen}
-        onClose={() => setManualOpen(false)}
-        profile={profile}
-        businesses={businesses}
-        manualThisMonth={manualThisMonth}
-        onSaved={() => { setManualOpen(false); loadData(); }}
-      />
-
-      <TimeOffModal
-        open={timeOffOpen}
-        onClose={() => setTimeOffOpen(false)}
-        profile={profile}
-        onSaved={() => { setTimeOffOpen(false); loadData(); }}
-      />
+      <ManualEntryModal open={manualOpen} onClose={() => setManualOpen(false)} profile={profile} businesses={businesses} myTasks={myTasks} manualThisMonth={manualThisMonth} onSaved={() => { setManualOpen(false); loadData(); }} />
+      <TimeOffModal open={timeOffOpen} onClose={() => setTimeOffOpen(false)} profile={profile} onSaved={() => { setTimeOffOpen(false); loadData(); }} />
     </div>
   );
 }
 
-function ManualEntryModal({ open, onClose, profile, businesses, manualThisMonth, onSaved }) {
+function ManualEntryModal({ open, onClose, profile, businesses, myTasks, manualThisMonth, onSaved }) {
   const [businessId, setBusinessId] = useState('');
+  const [taskId, setTaskId] = useState('');
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [hours, setHours] = useState('');
   const [minutes, setMinutes] = useState('');
@@ -248,6 +292,8 @@ function ManualEntryModal({ open, onClose, profile, businesses, manualThisMonth,
   useEffect(() => {
     if (open && businesses.length && !businessId) setBusinessId(businesses[0].id);
   }, [open, businesses]);
+
+  const tasksForBiz = myTasks.filter(t => t.business_id === businessId);
 
   async function save() {
     setErr('');
@@ -265,6 +311,7 @@ function ManualEntryModal({ open, onClose, profile, businesses, manualThisMonth,
     setBusy(true);
     const { error } = await supabase.from('time_entries').insert({
       user_id: profile.id, business_id: businessId,
+      task_id: taskId || null,
       description: desc.trim(), duration: total,
       date: entryDate.toISOString(), type: 'manual', reason: reason.trim()
     });
@@ -273,7 +320,7 @@ function ManualEntryModal({ open, onClose, profile, businesses, manualThisMonth,
     await logAudit('time_entry.create', 'time_entry', null, { type: 'manual', duration: total });
     const biz = businesses.find(b => b.id === businessId);
     toast.show(`${formatDuration(total)} manual entry logged for ${biz?.name || 'business'}.`);
-    setBusinessId(''); setHours(''); setMinutes(''); setDesc(''); setReason('');
+    setBusinessId(''); setTaskId(''); setHours(''); setMinutes(''); setDesc(''); setReason('');
     onSaved();
   }
 
@@ -295,10 +342,23 @@ function ManualEntryModal({ open, onClose, profile, businesses, manualThisMonth,
 
       <div className="mb-3">
         <label className="field-label">Business</label>
-        <select value={businessId} onChange={e => setBusinessId(e.target.value)}>
+        <select value={businessId} onChange={e => { setBusinessId(e.target.value); setTaskId(''); }}>
           {businesses.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
         </select>
       </div>
+      {tasksForBiz.length > 0 && (
+        <div className="mb-3">
+          <label className="field-label">Task (optional)</label>
+          <select value={taskId} onChange={e => {
+            setTaskId(e.target.value);
+            const t = tasksForBiz.find(x => x.id === e.target.value);
+            if (t && !desc) setDesc(t.title);
+          }}>
+            <option value="">— No specific task —</option>
+            {tasksForBiz.map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
+          </select>
+        </div>
+      )}
       <div className="mb-3">
         <label className="field-label">Date</label>
         <input type="date" className="input" value={date} onChange={e => setDate(e.target.value)} />

@@ -22,9 +22,8 @@ export default function AdminRequestsPage() {
     const notes = status === 'denied' ? prompt('Reason for denial (visible to OTM)?') : null;
     if (status === 'denied' && !notes) return;
     const { data: { user } } = await supabase.auth.getUser();
-    const { data: me } = await supabase.from('users').select('id').eq('id', user.id).single();
     const { error } = await supabase.from('time_off').update({
-      status, reviewed_by: me?.id,
+      status, reviewed_by: user.id,
       reviewed_at: new Date().toISOString(), review_notes: notes
     }).eq('id', id);
     if (error) return toast.show(error.message, 'error');
@@ -33,8 +32,26 @@ export default function AdminRequestsPage() {
     load();
   }
 
+  async function deleteRequest(id) {
+    if (!confirm('Delete this request from history? This cannot be undone.')) return;
+    const { error } = await supabase.from('time_off').delete().eq('id', id);
+    if (error) return toast.show(error.message, 'error');
+    await logAudit('time_off.delete', 'time_off', id);
+    toast.show('Request deleted.');
+    load();
+  }
+
+  async function clearAllHistory() {
+    if (!confirm('Delete ALL reviewed (approved/denied) requests? Pending requests will be kept. This cannot be undone.')) return;
+    const { error } = await supabase.from('time_off').delete().in('status', ['approved', 'denied']);
+    if (error) return toast.show(error.message, 'error');
+    await logAudit('time_off.clear_history');
+    toast.show('History cleared.');
+    load();
+  }
+
   const pending = requests.filter(r => r.status === 'pending');
-  const reviewed = requests.filter(r => r.status !== 'pending').slice(0, 20);
+  const reviewed = requests.filter(r => r.status !== 'pending');
 
   return (
     <div>
@@ -65,10 +82,15 @@ export default function AdminRequestsPage() {
       </div>
 
       <div className="panel">
-        <SectionTitle kicker="Last 20 decisions">History</SectionTitle>
+        <div className="flex justify-between items-center mb-3 flex-wrap gap-2">
+          <SectionTitle kicker="Reviewed">History ({reviewed.length})</SectionTitle>
+          {reviewed.length > 0 && (
+            <button className="btn-sm danger" onClick={clearAllHistory}>CLEAR ALL HISTORY</button>
+          )}
+        </div>
         {reviewed.length === 0 ? <Empty>No reviewed requests yet.</Empty> : (
           <table>
-            <thead><tr><th>OTM</th><th>Type</th><th>Dates</th><th>Decision</th><th>Reviewed</th></tr></thead>
+            <thead><tr><th>OTM</th><th>Type</th><th>Dates</th><th>Decision</th><th>Reviewed</th><th></th></tr></thead>
             <tbody>
               {reviewed.map(r => (
                 <tr key={r.id}>
@@ -77,6 +99,7 @@ export default function AdminRequestsPage() {
                   <td>{formatDate(r.start_date)} → {formatDate(r.end_date)}</td>
                   <td><span className={`badge ${r.status === 'approved' ? 'active' : 'hold'}`}>{r.status.toUpperCase()}</span></td>
                   <td>{formatDate(r.reviewed_at)}</td>
+                  <td><button className="btn-sm danger" onClick={() => deleteRequest(r.id)}>Delete</button></td>
                 </tr>
               ))}
             </tbody>
