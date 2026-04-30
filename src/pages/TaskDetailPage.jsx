@@ -311,6 +311,14 @@ export default function TaskDetailPage({ role, profile }) {
     toast.show('Message deleted.');
   }
 
+  async function claimTask() {
+    const { error } = await supabase.rpc('claim_task', { p_task_id: taskId });
+    if (error) { toast.show(error.message, 'error'); return; }
+    await logAudit('task.claim', 'task', taskId);
+    toast.show('Task claimed. You are now the assignee.');
+    loadAll();
+  }
+
   // Status changes — also auto-post a system message into the conversation
   async function changeStatus(newStatus, reason = null) {
     const patch = { status: newStatus };
@@ -477,6 +485,7 @@ export default function TaskDetailPage({ role, profile }) {
 
   // Build a quick lookup for finding the back-fill on a reply quote
   const commentsById = comments.reduce((acc, c) => { acc[c.id] = c; return acc; }, {});
+  const participantById = participants.reduce((acc, p) => { acc[p.id] = p; return acc; }, {});
 
   return (
     <div>
@@ -532,6 +541,10 @@ export default function TaskDetailPage({ role, profile }) {
             )}
           </div>
           <div className="flex gap-2 flex-wrap">
+            {/* OTM Claim — when task is unassigned and the viewing OTM is on this business */}
+            {isOTM && !task.assignee_id && participants.some(p => p.id === profile?.id && p.is_business_otm) && (
+              <button className="btn-sm ink" onClick={claimTask}>+ CLAIM THIS TASK</button>
+            )}
             {/* OTM actions */}
             {isOTM && task.assignee_id === profile?.id && (
               <>
@@ -643,6 +656,7 @@ export default function TaskDetailPage({ role, profile }) {
               profile={profile}
               isAdmin={isAdmin}
               parent={c.reply_to_id ? commentsById[c.reply_to_id] : null}
+              participantById={participantById}
               onReply={() => setReplyTo({ id: c.id, author_name: c.author_name, body: c.body, attachments: c.attachments })}
               onDelete={() => deleteComment(c.id)}
             />
@@ -777,7 +791,7 @@ function ParticipantsStrip({ participants }) {
   );
 }
 
-function CommentRow({ c, profile, isAdmin, parent, onReply, onDelete }) {
+function CommentRow({ c, profile, isAdmin, parent, participantById, onReply, onDelete }) {
   if (c.system_message) {
     return (
       <div className="my-3 flex justify-center">
@@ -796,10 +810,16 @@ function CommentRow({ c, profile, isAdmin, parent, onReply, onDelete }) {
   }[c.author_role] || 'var(--slate)';
   const roleLbl = labelRole(c.author_role);
 
+  // Look up author photo via participants map (works for users + clients)
+  const authorParticipant = participantById?.[c.author_id];
+  const authorAvatarUrl = mine ? profile?.avatar_url : authorParticipant?.avatar_url;
+  const authorName = c.author_name || authorParticipant?.name || '?';
+
   return (
-    <div className={`mb-3 flex ${mine ? 'justify-end' : 'justify-start'}`}>
+    <div className={`mb-3 flex items-end gap-2 ${mine ? 'justify-end' : 'justify-start'}`}>
+      {!mine && <Avatar url={authorAvatarUrl} name={authorName} size={32} />}
       <div
-        className="max-w-[78%] bg-paper border border-line rounded-lg p-3 shadow-sm"
+        className="max-w-[72%] bg-paper border border-line rounded-lg p-3 shadow-sm"
         style={mine ? { borderLeft: '3px solid var(--ok)' } : { borderLeft: `3px solid ${roleColor}` }}
       >
         {parent && (
@@ -810,7 +830,7 @@ function CommentRow({ c, profile, isAdmin, parent, onReply, onDelete }) {
         )}
 
         <div className="flex items-baseline gap-2 mb-1 flex-wrap">
-          <strong className="text-sm">{mine ? 'You' : c.author_name}</strong>
+          <strong className="text-sm">{mine ? 'You' : authorName}</strong>
           <span className="badge text-[9px]" style={{ background: roleColor, color: 'var(--cream)' }}>{roleLbl}</span>
           <span className="text-[10px] text-muted">{formatDateTime(c.created_at)}</span>
           {c.edited_at && <span className="text-[10px] text-muted italic">edited</span>}
@@ -831,6 +851,7 @@ function CommentRow({ c, profile, isAdmin, parent, onReply, onDelete }) {
           )}
         </div>
       </div>
+      {mine && <Avatar url={authorAvatarUrl} name={authorName} size={32} />}
     </div>
   );
 }

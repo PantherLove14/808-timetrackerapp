@@ -48,14 +48,23 @@ export default function TimeTrackerPage({ role, profile }) {
     if (!profile) return;
     const isOTM = role === 'va' || role === 'otm';
     if (!isOTM) { setMyTasks([]); return; }
-    let q = supabase.from('tasks')
-      .select('id, title, business_id, status, businesses(name)')
-      .eq('assignee_id', profile.id)
-      .in('status', ['todo', 'in_progress', 'revision_requested'])
-      .order('created_at', { ascending: false });
-    if (selectedId !== 'all') q = q.eq('business_id', selectedId);
-    const { data } = await q;
-    setMyTasks(data || []);
+    // Use list_otm_tasks RPC: returns tasks assigned to me PLUS unassigned tasks
+    // on businesses I'm assigned to. That way the dropdown shows everything I
+    // could legitimately log time against, regardless of who created the task.
+    const { data, error } = await supabase.rpc('list_otm_tasks', { p_user_id: profile.id });
+    if (error) { setMyTasks([]); return; }
+    const filtered = (data || []).filter(t =>
+      ['todo', 'in_progress', 'revision_requested'].includes(t.status)
+      && (selectedId === 'all' || t.business_id === selectedId)
+    );
+    // Normalize shape so existing render code keeps working (businesses.name accessor)
+    setMyTasks(filtered.map(t => ({
+      id: t.id,
+      title: t.title + (t.is_unclaimed ? ' (unassigned — claim from Tasks page)' : ''),
+      business_id: t.business_id,
+      status: t.status,
+      businesses: { name: t.business_name }
+    })));
   }
 
   function startTimer() {
