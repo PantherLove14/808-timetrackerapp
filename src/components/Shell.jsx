@@ -120,6 +120,7 @@ function buildTabs(role, pendingRequests) {
     return [
       { path: '/dashboard', label: 'Dashboard' },
       { path: '/clients', label: 'Clients' },
+      { path: '/admin/tasks', label: 'Tasks' },
       { path: '/timesheets', label: 'Timesheets' },
       { path: '/summary', label: 'Weekly Summary' },
       { path: '/admin/team', label: 'OTM Team' },

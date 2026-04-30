@@ -16,6 +16,7 @@ import AdminRequestsPage from './pages/admin/AdminRequestsPage';
 import AdminLockPage from './pages/admin/AdminLockPage';
 import AdminPayPage from './pages/admin/AdminPayPage';
 import AdminCredentialsPage from './pages/admin/AdminCredentialsPage';
+import AdminTasksPage from './pages/admin/AdminTasksPage';
 import AuditLogPage from './pages/admin/AuditLogPage';
 import ProfilePage from './pages/ProfilePage';
 
@@ -62,6 +63,7 @@ export default function App() {
             {(normalizedRole === 'admin' || normalizedRole === 'sub_admin') && (
               <>
                 <Route path="/summary" element={<WeeklySummaryPage />} />
+                <Route path="/admin/tasks" element={<AdminTasksPage />} />
                 <Route path="/admin/team" element={<AdminTeamPage />} />
                 <Route path="/admin/clients" element={<AdminClientsPage />} />
                 <Route path="/admin/requests" element={<AdminRequestsPage />} />
