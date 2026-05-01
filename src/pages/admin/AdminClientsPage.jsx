@@ -388,37 +388,60 @@ function EditClientModal({ open, onClose, editing, onSaved }) {
   const [form, setForm] = useState({});
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [notableDates, setNotableDates] = useState([]);
   const toast = useToast();
 
   useEffect(() => {
     if (open && editing) {
       setForm({
         name: editing.name || '',
+        email: editing.email || '',
         phone: editing.phone || '',
         address: editing.address || '',
         birthday: editing.birthday || '',
-        admin_notes: editing.admin_notes || ''
+        admin_notes: editing.admin_notes || '',
+        active: editing.active !== false
       });
+      setNotableDates(Array.isArray(editing.notable_dates) ? editing.notable_dates : []);
       setErr('');
     }
   }, [open, editing]);
 
-  function f(k) { return { value: form[k] || '', onChange: e => setForm(s => ({ ...s, [k]: e.target.value })) }; }
+  function f(k) { return { value: form[k] ?? '', onChange: e => setForm(s => ({ ...s, [k]: e.target.value })) }; }
+
+  function addNotableDate() {
+    setNotableDates(prev => [...prev, { label: '', date: '' }]);
+  }
+  function removeNotableDate(i) {
+    setNotableDates(prev => prev.filter((_, idx) => idx !== i));
+  }
+  function updateNotableDate(i, field, val) {
+    setNotableDates(prev => prev.map((nd, idx) => idx === i ? { ...nd, [field]: val } : nd));
+  }
 
   async function save() {
     setErr('');
     if (!form.name?.trim()) return setErr('Name required.');
+    if (!form.email?.trim()) return setErr('Email required.');
     setBusy(true);
+
+    // Filter notable dates to only valid entries
+    const validNotable = notableDates.filter(nd => (nd.label || '').trim() && nd.date);
+
     const { error } = await supabase.from('clients').update({
       name: form.name.trim(),
+      email: form.email.trim(),
       phone: form.phone || null,
       address: form.address || null,
       birthday: form.birthday || null,
-      admin_notes: form.admin_notes || null
+      admin_notes: form.admin_notes || null,
+      active: !!form.active,
+      notable_dates: validNotable
     }).eq('id', editing.id);
+
     setBusy(false);
     if (error) return setErr(error.message);
-    await logAudit('client.update', 'client', editing.id);
+    await logAudit('client.update', 'client', editing.id, { fields: Object.keys(form) });
     toast.show('Client updated.');
     onSaved();
   }
@@ -426,30 +449,86 @@ function EditClientModal({ open, onClose, editing, onSaved }) {
   if (!editing) return null;
 
   return (
-    <Modal open={open} onClose={onClose} title="Edit client contact"
-      subtitle={editing?.email}
+    <Modal open={open} onClose={onClose} title="Edit client"
+      subtitle={`Last updated ${editing.updated_at ? new Date(editing.updated_at).toLocaleString() : '—'}`}
       footer={<>
         <button className="btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn-sm ink" onClick={save} disabled={busy}>{busy ? 'SAVING…' : 'SAVE'}</button>
+        <button className="btn-sm ink" onClick={save} disabled={busy}>{busy ? 'SAVING…' : 'SAVE CHANGES'}</button>
       </>}>
+
       <div className="grid grid-cols-2 gap-3 mb-3">
         <div><label className="field-label">Contact name</label><input className="input" {...f('name')} /></div>
         <div><label className="field-label">Phone</label><input className="input" {...f('phone')} /></div>
       </div>
+
       <div className="mb-3">
-        <label className="field-label">Address</label>
+        <label className="field-label">Email (login)</label>
+        <input className="input" type="email" {...f('email')} />
+        <div className="text-xs text-muted mt-1">
+          Changing the email here updates the client's display email but does NOT change their login. To change the login email, use the Credentials Vault.
+        </div>
+      </div>
+
+      <div className="mb-3">
+        <label className="field-label">Mailing address</label>
         <input className="input" {...f('address')} />
       </div>
+
+      <div className="grid grid-cols-2 gap-3 mb-3">
+        <div>
+          <label className="field-label">Birthday</label>
+          <input type="date" className="input" {...f('birthday')} />
+        </div>
+        <div>
+          <label className="field-label">Account status</label>
+          <select value={form.active ? 'active' : 'inactive'} onChange={e => setForm(s => ({ ...s, active: e.target.value === 'active' }))}>
+            <option value="active">Active</option>
+            <option value="inactive">Inactive (cannot log in)</option>
+          </select>
+        </div>
+      </div>
+
       <div className="mb-3">
-        <label className="field-label">Birthday</label>
-        <input type="date" className="input" {...f('birthday')} />
+        <div className="flex items-center justify-between mb-2">
+          <label className="field-label" style={{ marginBottom: 0 }}>Notable dates</label>
+          <button type="button" className="btn-sm" onClick={addNotableDate}>+ Add date</button>
+        </div>
+        {notableDates.length === 0 ? (
+          <div className="text-xs text-muted italic">No notable dates yet. Anniversaries, contract milestones, etc.</div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {notableDates.map((nd, i) => (
+              <div key={i} className="flex gap-2 items-center">
+                <input
+                  className="input"
+                  placeholder="Label (e.g. contract anniversary)"
+                  value={nd.label || ''}
+                  onChange={e => updateNotableDate(i, 'label', e.target.value)}
+                  style={{ flex: 2 }}
+                />
+                <input
+                  type="date"
+                  className="input"
+                  value={nd.date || ''}
+                  onChange={e => updateNotableDate(i, 'date', e.target.value)}
+                  style={{ flex: 1 }}
+                />
+                <button type="button" className="btn-sm danger" onClick={() => removeNotableDate(i)}>✕</button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
-      <div>
-        <label className="field-label">Admin notes</label>
-        <textarea className="input" rows="3" {...f('admin_notes')} />
+
+      <div className="mb-3">
+        <label className="field-label">Admin notes (private — not shown to client)</label>
+        <textarea className="input" rows="4" {...f('admin_notes')} />
       </div>
+
       <div className="text-xs text-muted mt-3 pt-3 border-t border-line-soft">
-        Email can't be changed after creation. To reset password, use the Credentials Vault page.
+        To change profile photo, ask the client to update it from their Profile page, or use the Credentials Vault.
+        To reset password, use the Credentials Vault page.
+        Email login changes also flow through the Credentials Vault.
       </div>
       {err && <div className="text-sm text-crimson mt-2">{err}</div>}
     </Modal>

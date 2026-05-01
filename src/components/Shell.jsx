@@ -6,6 +6,7 @@ import { BRAND } from '../lib/constants';
 import Logo from './Logo';
 import { Avatar } from './Avatar';
 import { BusinessHeaderBar } from './BusinessSelector';
+import { useTimer, formatElapsed } from './TimerProvider';
 
 export default function Shell({ children, role, profile }) {
   const loc = useLocation();
@@ -40,10 +41,11 @@ export default function Shell({ children, role, profile }) {
         style={{ background: 'var(--paper)', borderBottom: '1px solid var(--line)' }}
       >
         <div className="flex items-center gap-3">
-          <Logo size={38} />
-          <div>
-            <div className="font-bebas text-xl tracking-widest text-ink leading-none">808 TALENT SOURCE</div>
-            <div className="font-display italic text-xs text-slate808">Time Tracker & Operations</div>
+          <NavLink to="/dashboard" className="flex items-center" aria-label="808 Talent Source">
+            <Logo variant="full" size={36} />
+          </NavLink>
+          <div className="hidden sm:block border-l border-line pl-3 ml-1">
+            <div className="font-display italic text-xs text-slate808">Time Tracker &amp; Operations</div>
           </div>
         </div>
 
@@ -77,6 +79,9 @@ export default function Shell({ children, role, profile }) {
           </NavLink>
         ))}
       </nav>
+
+      {/* Global timer banner — visible from any page when a timer is running */}
+      <GlobalTimerBanner />
 
       {/* Business header bar appears here for clients and OTMs */}
       <BusinessHeaderBar role={role} />
@@ -146,4 +151,58 @@ function buildTabs(role, pendingRequests) {
     { path: '/tasks', label: 'Tasks' },
     { path: '/timesheets', label: 'Timesheets' }
   ];
+}
+
+// Persistent banner showing live timer status from any page.
+// Click it to navigate back to /tracker.
+function GlobalTimerBanner() {
+  const { active, elapsed, maxSeconds } = useTimer();
+  const loc = useLocation();
+  const nav = useNavigate();
+
+  if (!active) return null;
+  if (loc.pathname === '/tracker') return null; // hide when already on tracker page
+
+  const pct = Math.min(100, (elapsed / maxSeconds) * 100);
+
+  return (
+    <div
+      onClick={() => nav('/tracker')}
+      className="sticky z-30 cursor-pointer"
+      style={{
+        top: 73,
+        background: 'var(--crimson)',
+        color: 'var(--cream)',
+        padding: '10px 24px',
+        boxShadow: '0 2px 12px rgba(168,4,4,0.25)',
+        borderBottom: '3px solid var(--crimson-dark)'
+      }}
+      title="Click to return to the Time Tracker"
+    >
+      <div className="max-w-[1400px] mx-auto flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <span style={{
+            width: 10, height: 10, borderRadius: '50%',
+            background: '#fff6ea', animation: 'pulse 1.2s infinite', flexShrink: 0
+          }} />
+          <div className="min-w-0">
+            <div className="font-bebas text-[10px] tracking-widest opacity-90">TIMER RUNNING ON</div>
+            <div className="font-display font-semibold leading-tight truncate">{active.businessName || 'business'}</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="font-display font-bold tabular-nums" style={{ fontSize: 20 }}>
+            {formatElapsed(elapsed)}
+          </div>
+          <div className="font-bebas text-[10px] tracking-widest opacity-80 hidden sm:block">
+            CLICK TO RETURN
+          </div>
+        </div>
+      </div>
+      {/* progress bar to 8h */}
+      <div style={{ height: 2, background: 'rgba(0,0,0,0.2)', marginTop: 8, marginLeft: -24, marginRight: -24 }}>
+        <div style={{ height: '100%', width: `${pct}%`, background: 'rgba(255,255,255,0.7)' }} />
+      </div>
+    </div>
+  );
 }

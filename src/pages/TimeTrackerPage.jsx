@@ -1,34 +1,46 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { supabase, logAudit } from '../lib/supabase';
 import PageHeader, { SectionTitle, Empty } from '../components/PageHeader';
 import Modal from '../components/Modal';
 import { useBusinesses, useToast } from '../components/BusinessSelector';
+import { useTimer, formatElapsed } from '../components/TimerProvider';
 import { businessDot } from '../lib/businessColor';
 import { formatDate, formatDuration, sameMonth } from '../lib/format';
 
 export default function TimeTrackerPage({ role, profile }) {
-  const { businesses, selected, selectedId, setSelectedId, setTimerActive } = useBusinesses();
+  const { businesses, selected, selectedId, setSelectedId } = useBusinesses();
+  const { active, elapsed, maxSeconds, startTimer, stopTimer, cancelTimer, updateTimer } = useTimer();
   const toast = useToast();
 
   const [myTimeOff, setMyTimeOff] = useState([]);
   const [manualThisMonth, setManualThisMonth] = useState(null);
   const [myTasks, setMyTasks] = useState([]);
 
-  const [running, setRunning] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
   const [description, setDescription] = useState('');
   const [taskId, setTaskId] = useState('');
-  const startRef = useRef(null);
-  const intervalRef = useRef(null);
-  const lastActivityRef = useRef(Date.now());
-  const idleCheckRef = useRef(null);
-  const [idleAlert, setIdleAlert] = useState(false);
 
   const [manualOpen, setManualOpen] = useState(false);
   const [timeOffOpen, setTimeOffOpen] = useState(false);
 
   useEffect(() => { loadData(); }, [profile]);
   useEffect(() => { loadTasks(); }, [profile, selectedId]);
+
+  // If a timer is running but description is empty in our local state, sync from active
+  useEffect(() => {
+    if (active) {
+      if (!description) setDescription(active.description || '');
+      if (!taskId && active.taskId) setTaskId(active.taskId);
+    }
+  }, [active]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // When the user types or picks a task, update the global timer state too
+  // so it persists with the timer record across page navigation.
+  useEffect(() => {
+    if (active) updateTimer({ description });
+  }, [description]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (active) updateTimer({ taskId: taskId || null });
+  }, [taskId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function loadData() {
     if (!profile) return;
@@ -48,96 +60,68 @@ export default function TimeTrackerPage({ role, profile }) {
     if (!profile) return;
     const isOTM = role === 'va' || role === 'otm';
     if (!isOTM) { setMyTasks([]); return; }
-    // Use list_otm_tasks RPC: returns tasks assigned to me PLUS unassigned tasks
-    // on businesses I'm assigned to. That way the dropdown shows everything I
-    // could legitimately log time against, regardless of who created the task.
     const { data, error } = await supabase.rpc('list_otm_tasks', { p_user_id: profile.id });
     if (error) { setMyTasks([]); return; }
     const filtered = (data || []).filter(t =>
       ['todo', 'in_progress', 'revision_requested'].includes(t.status)
       && (selectedId === 'all' || t.business_id === selectedId)
     );
-    // Normalize shape so existing render code keeps working (businesses.name accessor)
     setMyTasks(filtered.map(t => ({
       id: t.id,
-      title: t.title + (t.is_unclaimed ? ' (unassigned — claim from Tasks page)' : ''),
+      title: t.title + (t.is_unclaimed ? ' (unclaimed — claim from Tasks page)' : ''),
       business_id: t.business_id,
       status: t.status,
       businesses: { name: t.business_name }
     })));
   }
 
-  function startTimer() {
-    if (!selected) { toast.show('Pick a business from the header bar first.', 'warn'); return; }
-    startRef.current = Date.now();
-    setRunning(true);
-    setTimerActive(true);
-    setElapsed(0);
-    lastActivityRef.current = Date.now();
-    setIdleAlert(false);
-
-    // If a task is selected and no description yet, prefill from task title
-    if (taskId && !description) {
+  function handleStart() {
+    if (!selected) {
+      toast.show('Pick a business from the header bar first.', 'warn');
+      return;
+    }
+    let finalDescription = description.trim();
+    if (taskId && !finalDescription) {
       const t = myTasks.find(x => x.id === taskId);
-      if (t) setDescription(t.title);
+      if (t) finalDescription = t.title;
     }
-
-    intervalRef.current = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
-    }, 1000);
-
-    idleCheckRef.current = setInterval(() => {
-      if (Date.now() - lastActivityRef.current > 10 * 60 * 1000) setIdleAlert(true);
-    }, 30000);
-
-    ['mousemove', 'keydown', 'click', 'touchstart'].forEach(ev =>
-      document.addEventListener(ev, markActivity)
-    );
-  }
-
-  function markActivity() {
-    lastActivityRef.current = Date.now();
-    if (idleAlert) setIdleAlert(false);
-  }
-
-  async function stopTimer() {
-    if (!running) return;
-    const duration = Math.floor((Date.now() - startRef.current) / 1000);
-    const bizForSave = selected;
-    if (duration < 10) {
-      if (!confirm('Less than 10 seconds tracked. Save anyway?')) { cleanupTimer(); return; }
-    }
-    const { error } = await supabase.from('time_entries').insert({
-      user_id: profile.id,
-      business_id: bizForSave.id,
-      task_id: taskId || null,
-      description: description.trim() || '(no description)',
-      duration,
-      date: new Date().toISOString(),
-      type: 'timer'
+    const result = startTimer({
+      businessId: selected.id,
+      businessName: selected.name,
+      taskId: taskId || null,
+      description: finalDescription
     });
-    if (error) { toast.show('Failed to save entry: ' + error.message, 'error'); return; }
-    await logAudit('time_entry.create', 'time_entry', null, { duration, type: 'timer', role });
-    toast.show(`${formatDuration(duration)} logged for ${bizForSave.name}.`);
-    cleanupTimer();
+    if (result?.error) {
+      toast.show(result.error, 'error');
+      return;
+    }
+    setDescription(finalDescription);
+    toast.show(`Timer started on ${selected.name}. Keeps running across pages and even if you close this tab.`);
+  }
+
+  async function handleStop() {
+    const result = await stopTimer();
+    if (result?.error) {
+      toast.show('Failed to save: ' + result.error, 'error');
+      return;
+    }
+    if (result?.autoStop) {
+      toast.show(`Timer auto-stopped at 8 hours. ${formatDuration(result.duration)} logged.`);
+    } else {
+      toast.show(`${formatDuration(result.duration)} logged.`);
+    }
     setDescription('');
     setTaskId('');
     loadData();
   }
 
-  function cleanupTimer() {
-    setRunning(false);
-    setTimerActive(false);
-    setElapsed(0);
-    setIdleAlert(false);
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    if (idleCheckRef.current) clearInterval(idleCheckRef.current);
-    ['mousemove', 'keydown', 'click', 'touchstart'].forEach(ev =>
-      document.removeEventListener(ev, markActivity)
-    );
+  function handleCancel() {
+    if (!confirm('Cancel timer without saving the time?')) return;
+    cancelTimer();
+    setDescription('');
+    setTaskId('');
+    toast.show('Timer cancelled. Nothing saved.', 'warn');
   }
-
-  useEffect(() => () => { cleanupTimer(); setTimerActive(false); }, []);
 
   // When user picks a task from dropdown, auto-fill description if blank
   function handleTaskChange(e) {
@@ -149,26 +133,17 @@ export default function TimeTrackerPage({ role, profile }) {
     }
   }
 
-  const h = Math.floor(elapsed / 3600);
-  const m = Math.floor((elapsed % 3600) / 60);
-  const s = elapsed % 60;
-  const display = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-
-  const nextMonthName = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1)
-    .toLocaleString('en-US', { month: 'long' });
-
-  const isOTM = role === 'va' || role === 'otm';
-
-  // Filter tasks by selected business if a specific one chosen
-  const tasksForDropdown = selectedId === 'all'
-    ? myTasks
-    : myTasks.filter(t => t.business_id === selectedId);
+  const display = formatElapsed(elapsed);
+  const pctTo8 = Math.min(100, (elapsed / maxSeconds) * 100);
+  const remaining = maxSeconds - elapsed;
+  const remainingHrs = Math.max(0, Math.floor(remaining / 3600));
+  const remainingMin = Math.max(0, Math.floor((remaining % 3600) / 60));
 
   return (
     <div>
-      <PageHeader kicker="Focus" title="Time Tracker" subtitle="Start the clock and log your work. Your active business shows in the bar above." />
+      <PageHeader kicker="Focus" title="Time Tracker" subtitle="Start the clock and log your work. Your timer keeps running even when you switch pages, switch tabs, or close your browser. It auto-stops at 8 hours." />
 
-      {!selected && (
+      {!selected && !active && (
         <div className="panel mb-5" style={{ background: 'rgba(184,134,11,0.08)', borderColor: 'rgba(184,134,11,0.3)' }}>
           <div className="text-warn text-sm">
             <strong>Pick a business first.</strong> Use the "Switch ▾" button in the header bar to select which business you're working on.
@@ -176,86 +151,98 @@ export default function TimeTrackerPage({ role, profile }) {
         </div>
       )}
 
-      {idleAlert && (
-        <div className="panel mb-5 flex items-center justify-between gap-4" style={{ background: 'rgba(184,134,11,0.08)', borderColor: 'rgba(184,134,11,0.3)' }}>
-          <div className="text-warn text-sm">
-            <strong>Are you still working?</strong> No activity detected for 10 minutes.
-          </div>
-          <div className="flex gap-2">
-            <button className="btn-sm ink" onClick={() => { markActivity(); }}>YES, KEEP GOING</button>
-            <button className="btn-sm" onClick={stopTimer}>STOP TIMER</button>
-          </div>
-        </div>
-      )}
-
+      {/* Live timer panel */}
       <div className="panel mb-6 relative overflow-hidden" style={{ paddingRight: 40 }}>
-        <div style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: 4, background: running ? 'var(--crimson)' : 'var(--ink)' }} />
-        <div className="grid grid-cols-1 md:grid-cols-[1.2fr_1fr] gap-10">
-          <div>
-            <div className="font-bebas font-variant-numeric tabular-nums" style={{ fontSize: 72, letterSpacing: '0.04em', lineHeight: 1, color: running ? 'var(--crimson)' : 'var(--ink)' }}>
+        {active && (
+          <div style={{
+            position: 'absolute', top: 0, left: 0, right: 0, height: 4,
+            background: `linear-gradient(90deg, var(--crimson) ${pctTo8}%, var(--line) ${pctTo8}%)`
+          }} />
+        )}
+
+        <div className="flex justify-between items-start flex-wrap gap-4">
+          <div style={{ minWidth: 200 }}>
+            <div className="font-bebas text-[11px] tracking-widest text-crimson mb-1">
+              {active ? 'TRACKING' : 'READY'}
+            </div>
+            <div className="font-display font-bold text-ink leading-none" style={{ fontSize: 56 }}>
               {display}
             </div>
-            <div className="font-bebas text-xs tracking-widest mt-2 mb-5" style={{ color: running ? 'var(--crimson)' : 'var(--muted)' }}>
-              {running ? (<><span style={{ color: 'var(--crimson)', marginRight: 8, animation: 'pulse 1.5s infinite' }}>●</span>TRACKING</>) : 'READY'}
-            </div>
-            <div className="flex gap-2">
-              {!running ? (
-                <button className="btn-ink px-8 py-3" onClick={startTimer} disabled={!selected}>START</button>
+            {active && (
+              <div className="mt-2 text-xs text-muted">
+                Started {new Date(active.startedAt).toLocaleTimeString()}.
+                {' '}{remainingHrs > 0 ? `${remainingHrs}h ` : ''}{remainingMin}m left until 8-hour auto-stop.
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-3" style={{ minWidth: 300, flex: 1 }}>
+            <div>
+              <label className="field-label">Working on</label>
+              {active ? (
+                <div className="flex items-center gap-2 px-3 py-2 bg-cream-deep border border-line rounded">
+                  <span style={businessDot(active.businessId)} />
+                  <strong>{active.businessName || selected?.name || '—'}</strong>
+                </div>
+              ) : selected ? (
+                <div className="flex items-center gap-2 px-3 py-2 bg-cream-deep border border-line rounded">
+                  <span style={businessDot(selected.id)} />
+                  <strong>{selected.name}</strong>
+                </div>
               ) : (
-                <button className="btn-crimson px-8 py-3" onClick={stopTimer}>STOP</button>
+                <div className="text-sm text-muted italic px-3 py-2">No business selected</div>
               )}
             </div>
-          </div>
-          <div className="flex flex-col justify-center">
-            {selected && (
-              <div className="mb-4 bg-cream-deep border border-line p-3 rounded flex items-center gap-3">
-                <span style={businessDot(selected.id)} />
-                <div>
-                  <div className="font-bebas text-[10px] tracking-widest text-crimson">WORKING ON</div>
-                  <div className="font-medium">{selected.name}</div>
-                </div>
-              </div>
-            )}
-            {isOTM && tasksForDropdown.length > 0 && (
-              <div className="mb-3">
-                <label className="field-label">Working on which task?</label>
+
+            {(role === 'va' || role === 'otm') && myTasks.length > 0 && (
+              <div>
+                <label className="field-label">Task (optional)</label>
                 <select value={taskId} onChange={handleTaskChange}>
                   <option value="">— No specific task —</option>
-                  {tasksForDropdown.map(t => (
-                    <option key={t.id} value={t.id}>
-                      {t.title}{selectedId === 'all' ? ` — ${t.businesses?.name}` : ''}
-                    </option>
+                  {myTasks.map(t => (
+                    <option key={t.id} value={t.id}>{t.title}</option>
                   ))}
                 </select>
-                <div className="text-xs text-muted mt-1">Picking a task auto-fills the description below and links your time to it.</div>
               </div>
             )}
+
             <div>
-              <label className="field-label">What are you working on?</label>
-              <input className="input" value={description} onChange={e => setDescription(e.target.value)} placeholder="Brief description of your work..." />
+              <label className="field-label">What are you doing?</label>
+              <input
+                className="input"
+                value={description}
+                onChange={e => setDescription(e.target.value)}
+                placeholder="Brief description of your work"
+              />
               <div className="text-xs text-muted mt-1">This appears on client timesheets.</div>
             </div>
           </div>
         </div>
-      </div>
 
-      <div className="panel mb-6">
-        <div className="flex justify-between items-start mb-3">
-          <div><SectionTitle kicker="Forgot to clock in?">Manual entry</SectionTitle></div>
-          <button className="btn-sm ink" onClick={() => setManualOpen(true)}>+ ADD ENTRY</button>
-        </div>
-        <div className="text-sm text-slate808 bg-slate808/5 border-l-4 border-slate808 px-4 py-3 mb-2">
-          Manual entries are limited to <strong>one per calendar month</strong> and a maximum of <strong>8 hours</strong>.
-        </div>
-        <div className="text-xs text-muted mt-3">
-          {manualThisMonth ? (
-            <>You've used your manual entry for {new Date().toLocaleString('en-US', { month: 'long' })}: <strong>{formatDuration(manualThisMonth.duration)}</strong> on {formatDate(manualThisMonth.date)}. Next available: {nextMonthName}.</>
+        <div className="mt-5 pt-4 border-t border-line-soft flex gap-3 flex-wrap">
+          {!active ? (
+            <>
+              <button className="btn-ink" onClick={handleStart} disabled={!selected}>
+                START TIMER
+              </button>
+              <button className="btn-ghost" onClick={() => setManualOpen(true)}>
+                + MANUAL ENTRY
+              </button>
+            </>
           ) : (
-            <>You have <strong>1 manual entry available</strong> this month, up to 8 hours.</>
+            <>
+              <button className="btn-crimson" onClick={handleStop}>
+                STOP & SAVE
+              </button>
+              <button className="btn-ghost" onClick={handleCancel}>
+                CANCEL (no save)
+              </button>
+            </>
           )}
         </div>
       </div>
 
+      {/* Time off */}
       <div className="panel">
         <div className="flex justify-between items-start mb-3">
           <div><SectionTitle kicker="Request PTO">Time off</SectionTitle></div>
@@ -280,8 +267,21 @@ export default function TimeTrackerPage({ role, profile }) {
         )}
       </div>
 
-      <ManualEntryModal open={manualOpen} onClose={() => setManualOpen(false)} profile={profile} businesses={businesses} myTasks={myTasks} manualThisMonth={manualThisMonth} onSaved={() => { setManualOpen(false); loadData(); }} />
-      <TimeOffModal open={timeOffOpen} onClose={() => setTimeOffOpen(false)} profile={profile} onSaved={() => { setTimeOffOpen(false); loadData(); }} />
+      <ManualEntryModal
+        open={manualOpen}
+        onClose={() => setManualOpen(false)}
+        profile={profile}
+        businesses={businesses}
+        myTasks={myTasks}
+        manualThisMonth={manualThisMonth}
+        onSaved={() => { setManualOpen(false); loadData(); }}
+      />
+      <TimeOffModal
+        open={timeOffOpen}
+        onClose={() => setTimeOffOpen(false)}
+        profile={profile}
+        onSaved={() => { setTimeOffOpen(false); loadData(); }}
+      />
     </div>
   );
 }

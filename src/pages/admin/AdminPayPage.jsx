@@ -113,7 +113,10 @@ export default function AdminPayPage() {
 
       <div className="panel">
         <div className="flex justify-between items-center mb-3 flex-wrap gap-3">
-          <SectionTitle kicker="All issued stubs">Pay stub history</SectionTitle>
+          <div>
+            <SectionTitle kicker="All issued stubs">Pay stub history</SectionTitle>
+            <div className="text-xs text-muted -mt-2">Every stub you generate is saved here permanently. Click Download to get a fresh copy any time.</div>
+          </div>
           <input type="text" className="input max-w-xs" placeholder="Search by name, email, or month…" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
         {filteredStubs.length === 0 ? <Empty>{search ? `No stubs match "${search}".` : 'No stubs generated yet.'}</Empty> : (
@@ -196,13 +199,25 @@ function PayStubModal({ open, onClose, otm, month, onSaved }) {
       net_pay: net, admin_notes: notes || null, generated_by: user.id,
       generated_at: new Date().toISOString()
     };
-    const { error } = otm.existing
-      ? await supabase.from('pay_stubs').update(payload).eq('id', otm.existing.id)
-      : await supabase.from('pay_stubs').insert(payload);
+
+    let result;
+    if (otm.existing) {
+      result = await supabase.from('pay_stubs').update(payload).eq('id', otm.existing.id).select('*, users(name, email)').single();
+    } else {
+      result = await supabase.from('pay_stubs').insert(payload).select('*, users(name, email)').single();
+    }
+
     setBusy(false);
-    if (error) return setErr(error.message);
-    await logAudit(otm.existing ? 'pay_stub.update' : 'pay_stub.create', 'pay_stub', null, { otm_id: otm.id, month });
-    toast.show(`Pay stub ${otm.existing ? 'updated' : 'generated'} for ${otm.name}.`);
+    if (result.error) return setErr(result.error.message);
+
+    await logAudit(otm.existing ? 'pay_stub.update' : 'pay_stub.create', 'pay_stub', result.data?.id, { otm_id: otm.id, month });
+    toast.show(`Pay stub ${otm.existing ? 'updated' : 'generated'} for ${otm.name}. Downloading…`);
+
+    // Immediately trigger download so admin sees the stub right away
+    if (result.data) {
+      try { downloadStub(result.data); } catch (e) { console.warn('Download trigger failed:', e); }
+    }
+
     onSaved();
   }
 
@@ -235,28 +250,43 @@ function PayStubModal({ open, onClose, otm, month, onSaved }) {
 }
 
 function downloadStub(stub) {
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Pay Stub - ${stub.users?.name || 'OTM'} - ${new Date(stub.month).toLocaleString('en-US', { month: 'long', year: 'numeric' })}</title>
+  const otmName = stub.users?.name || 'OTM';
+  const monthLabel = new Date(stub.month).toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Pay Stub - ${otmName} - ${monthLabel}</title>
 <style>
 @page { margin: 0.5in; }
 body{font-family:'DM Sans',Arial,sans-serif;background:#fff6ea;padding:40px;color:#232323;margin:0;}
 .stub{max-width:640px;margin:0 auto;background:#fffdf8;border:1px solid #e6dcc6;padding:40px;}
-.head{border-bottom:3px solid #232323;padding-bottom:16px;margin-bottom:24px;}
-.brand{font-family:'Bebas Neue',Impact,sans-serif;font-size:24px;letter-spacing:0.14em;color:#232323;}
+.head{border-bottom:3px solid #232323;padding-bottom:16px;margin-bottom:24px;display:flex;align-items:center;justify-content:space-between;}
+.brand-block{font-family:'Bebas Neue',Impact,sans-serif;font-size:24px;letter-spacing:0.14em;color:#232323;}
 .sub{font-style:italic;color:#4d4e4f;font-size:14px;margin-top:4px;}
+.stub-id{font-family:'Bebas Neue',Impact,sans-serif;font-size:10px;letter-spacing:0.2em;color:#8a8070;}
 h1{font-family:Georgia,serif;font-size:28px;margin:0 0 4px 0;}
 .kicker{font-family:'Bebas Neue',Impact;letter-spacing:0.2em;color:#a80404;font-size:11px;}
 .row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f0e6d2;}
 .total{font-weight:bold;font-size:18px;padding-top:16px;border-top:2px solid #232323;}
 .notes{background:#f5ead5;border-left:3px solid #a80404;padding:12px;margin-top:20px;font-size:13px;}
 .foot{margin-top:32px;padding-top:16px;border-top:1px solid #e6dcc6;font-size:11px;color:#8a8070;}
+.print-btn{position:fixed;top:20px;right:20px;background:#232323;color:#fff6ea;border:none;padding:12px 20px;font-family:'Bebas Neue',Impact;letter-spacing:0.18em;cursor:pointer;border-radius:2px;font-size:13px;}
+.print-btn:hover{background:#a80404;}
 @media print {
   body { background: white; padding: 0; }
   .stub { border: 0; }
+  .print-btn { display: none; }
 }
-</style></head><body><div class="stub">
-<div class="head"><div class="brand">808 TALENT SOURCE</div><div class="sub">OTM Pay Stub</div></div>
-<div class="kicker">${new Date(stub.month).toLocaleString('en-US', { month: 'long', year: 'numeric' })}</div>
-<h1>${stub.users?.name || 'OTM'}</h1>
+</style></head><body>
+<button class="print-btn" onclick="window.print()">PRINT / SAVE PDF</button>
+<div class="stub">
+<div class="head">
+  <div>
+    <div class="brand-block">808 TALENT SOURCE</div>
+    <div class="sub">OTM Pay Stub</div>
+  </div>
+  <div class="stub-id">STUB ID ${stub.id?.slice(0, 8) || ''}</div>
+</div>
+<div class="kicker">${monthLabel}</div>
+<h1>${otmName}</h1>
+<div style="font-size:13px;color:#4d4e4f;margin-bottom:20px;">${stub.users?.email || ''}</div>
 <div style="margin:24px 0;">
 <div class="row"><span>Hours worked</span><span>${parseFloat(stub.hours_worked).toFixed(2)} hrs</span></div>
 <div class="row"><span>Hourly rate</span><span>$${parseFloat(stub.hourly_rate).toFixed(2)}</span></div>
@@ -271,13 +301,29 @@ ${stub.admin_notes ? `<div class="notes"><strong>Notes from admin:</strong><br>$
 ${BRAND.addressLine1} • ${BRAND.addressLine2} • ${BRAND.phone}<br>
 Generated ${stub.generated_at ? new Date(stub.generated_at).toLocaleString() : 'unknown'}
 </div></div>
-<script>setTimeout(()=>window.print(),300);</script>
 </body></html>`;
-  const w = window.open('', '_blank');
-  if (!w) {
-    alert('Popup blocked. Please allow popups for this site to download stubs.');
-    return;
+
+  // Bypass popup blockers by triggering a download anchor on a Blob URL
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  // Sanitize filename
+  const safeName = (otmName || 'OTM').replace(/[^a-zA-Z0-9 _-]/g, '').replace(/\s+/g, '_');
+  const safeMonth = monthLabel.replace(/\s+/g, '_');
+  a.download = `808_PayStub_${safeName}_${safeMonth}.html`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+  // Also try to open in a new tab so admin can immediately print to PDF if desired
+  try {
+    const w = window.open(URL.createObjectURL(blob), '_blank');
+    if (!w) {
+      // popup blocked — that's OK, the download already triggered
+    }
+  } catch (e) {
+    // ignore
   }
-  w.document.write(html);
-  w.document.close();
 }

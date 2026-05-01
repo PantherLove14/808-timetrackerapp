@@ -3,6 +3,7 @@ import { useAuth } from './hooks/useAuth';
 import LoginPage from './pages/LoginPage';
 import Shell from './components/Shell';
 import { BusinessProvider, ToastProvider } from './components/BusinessSelector';
+import { TimerProvider } from './components/TimerProvider';
 import Dashboard from './pages/Dashboard';
 import TimeTrackerPage from './pages/TimeTrackerPage';
 import TimesheetsPage from './pages/TimesheetsPage';
@@ -44,39 +45,41 @@ export default function App() {
 
   return (
     <ToastProvider>
-      <BusinessProvider role={normalizedRole} profile={profile}>
-        <Shell role={normalizedRole} profile={profile}>
-          <Routes>
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            <Route path="/dashboard" element={<Dashboard role={normalizedRole} profile={profile} />} />
-            <Route path="/profile" element={<ProfilePage role={normalizedRole} profile={profile} />} />
+      <TimerProvider profile={profile} role={normalizedRole}>
+        <BusinessProvider role={normalizedRole} profile={profile}>
+          <Shell role={normalizedRole} profile={profile}>
+            <Routes>
+              <Route path="/" element={<Navigate to="/dashboard" replace />} />
+              <Route path="/dashboard" element={<Dashboard role={normalizedRole} profile={profile} />} />
+              <Route path="/profile" element={<ProfilePage role={normalizedRole} profile={profile} />} />
 
-            {(normalizedRole === 'otm' || normalizedRole === 'admin' || normalizedRole === 'sub_admin') && (
-              <Route path="/tracker" element={<TimeTrackerPage role={normalizedRole} profile={profile} />} />
-            )}
+              {(normalizedRole === 'otm' || normalizedRole === 'admin' || normalizedRole === 'sub_admin') && (
+                <Route path="/tracker" element={<TimeTrackerPage role={normalizedRole} profile={profile} />} />
+              )}
 
-            <Route path="/timesheets" element={<TimesheetsPage role={normalizedRole} profile={profile} />} />
-            <Route path="/tasks" element={<TasksPage role={normalizedRole} profile={profile} />} />
-            <Route path="/tasks/:taskId" element={<TaskDetailPage role={normalizedRole} profile={profile} />} />
-            <Route path="/clients" element={<ClientsPage role={normalizedRole} profile={profile} />} />
+              <Route path="/timesheets" element={<TimesheetsPage role={normalizedRole} profile={profile} />} />
+              <Route path="/tasks" element={<TasksPage role={normalizedRole} profile={profile} />} />
+              <Route path="/tasks/:taskId" element={<TaskDetailPage role={normalizedRole} profile={profile} />} />
+              <Route path="/clients" element={<ClientsPage role={normalizedRole} profile={profile} />} />
 
-            {(normalizedRole === 'admin' || normalizedRole === 'sub_admin') && (
-              <>
-                <Route path="/summary" element={<WeeklySummaryPage />} />
-                <Route path="/admin/tasks" element={<AdminTasksPage />} />
-                <Route path="/admin/team" element={<AdminTeamPage />} />
-                <Route path="/admin/clients" element={<AdminClientsPage />} />
-                <Route path="/admin/requests" element={<AdminRequestsPage />} />
-                <Route path="/admin/lock" element={<AdminLockPage />} />
-                <Route path="/admin/pay" element={<AdminPayPage />} />
-                <Route path="/admin/credentials" element={<AdminCredentialsPage profile={profile} />} />
-                <Route path="/admin/audit" element={<AuditLogPage />} />
-              </>
-            )}
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
-          </Routes>
-        </Shell>
-      </BusinessProvider>
+              {(normalizedRole === 'admin' || normalizedRole === 'sub_admin') && (
+                <>
+                  <Route path="/summary" element={<WeeklySummaryPage />} />
+                  <Route path="/admin/tasks" element={<AdminTasksPage />} />
+                  <Route path="/admin/team" element={<AdminTeamPage />} />
+                  <Route path="/admin/clients" element={<AdminClientsPage />} />
+                  <Route path="/admin/requests" element={<AdminRequestsPage />} />
+                  <Route path="/admin/lock" element={<AdminLockPage />} />
+                  <Route path="/admin/pay" element={<AdminPayPage />} />
+                  <Route path="/admin/credentials" element={<AdminCredentialsPage profile={profile} />} />
+                  <Route path="/admin/audit" element={<AuditLogPage />} />
+                </>
+              )}
+              <Route path="*" element={<Navigate to="/dashboard" replace />} />
+            </Routes>
+          </Shell>
+        </BusinessProvider>
+      </TimerProvider>
     </ToastProvider>
   );
 }

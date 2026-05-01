@@ -1,31 +1,50 @@
-// Stylized 808 mark based on the uploaded logo aesthetic.
-// Uses brand colors: crimson for outer 8s, slate for inner 8.
-export default function Logo({ className = '', size = 60 }) {
+// 808 Talent Source brand logo. Renders the real PNG asset on a dark plate
+// because both lockup variants are designed for dark backgrounds.
+//
+// Variants:
+//   variant="mark"     → square 808-only mark, ideal for tight spots (header)
+//   variant="full"     → full lockup with TALENT SOURCE wordmark + tagline,
+//                        ideal for login page and large branded surfaces
+//
+// Both use a fixed dark plate so the gold + white reads clearly against the
+// app's cream/paper backgrounds without altering the brand asset itself.
+export default function Logo({ variant = 'mark', size = 38, className = '', plate = true }) {
+  const src = variant === 'full' ? '/brand/808-logo-full.png' : '/brand/808-logo-mark.png';
+  const aspectStyle = variant === 'full'
+    ? { width: size * 2.4, height: size }   // full lockup is wider
+    : { width: size, height: size };
+
+  if (!plate) {
+    return (
+      <img
+        src={src}
+        alt="808 Talent Source"
+        className={className}
+        style={{ ...aspectStyle, objectFit: 'contain', display: 'block' }}
+      />
+    );
+  }
+
   return (
-    <svg
+    <div
       className={className}
-      viewBox="0 0 120 120"
-      xmlns="http://www.w3.org/2000/svg"
-      style={{ width: size, height: size }}
-      role="img"
-      aria-label="808 Talent Source"
+      style={{
+        ...aspectStyle,
+        background: 'var(--ink)',
+        borderRadius: 4,
+        padding: variant === 'full' ? `${size * 0.08}px ${size * 0.12}px` : `${size * 0.08}px`,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        boxSizing: 'border-box',
+        flexShrink: 0
+      }}
     >
-      <rect width="120" height="120" fill="#232323" rx="4" />
-      {/* Left 8 — crimson */}
-      <g stroke="#a80404" strokeWidth="3.5" fill="none" strokeLinecap="round">
-        <ellipse cx="38" cy="40" rx="18" ry="16" />
-        <ellipse cx="38" cy="78" rx="18" ry="16" />
-      </g>
-      {/* Center 8 — slate (behind) */}
-      <g stroke="#6c6d6e" strokeWidth="3.5" fill="none" strokeLinecap="round">
-        <ellipse cx="60" cy="40" rx="18" ry="16" />
-        <ellipse cx="60" cy="78" rx="18" ry="16" />
-      </g>
-      {/* Right 8 — crimson */}
-      <g stroke="#a80404" strokeWidth="3.5" fill="none" strokeLinecap="round">
-        <ellipse cx="82" cy="40" rx="18" ry="16" />
-        <ellipse cx="82" cy="78" rx="18" ry="16" />
-      </g>
-    </svg>
+      <img
+        src={src}
+        alt="808 Talent Source"
+        style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
+      />
+    </div>
   );
 }

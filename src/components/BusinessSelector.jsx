@@ -90,7 +90,7 @@ export function useBusinesses() {
 }
 
 export function BusinessHeaderBar({ role }) {
-  const { businesses, selected, selectedId, setSelectedId, timerActive, activeStats } = useBusinesses();
+  const { businesses, selected, selectedId, setSelectedId, activeStats } = useBusinesses();
   const [open, setOpen] = useState(false);
 
   if (!businesses.length || role === 'admin' || role === 'sub_admin') return null;
@@ -98,29 +98,6 @@ export function BusinessHeaderBar({ role }) {
   const color = selected ? getBusinessColor(selected.id) : null;
   const viewingAll = selectedId === 'all';
   const isOTM = role === 'va' || role === 'otm';
-
-  if (timerActive && selected) {
-    return (
-      <div className="sticky top-[73px] z-30 mb-6" style={{
-        background: 'var(--crimson)',
-        borderBottom: '3px solid var(--crimson-dark)',
-        padding: '14px 24px',
-        color: 'var(--cream)',
-        boxShadow: '0 2px 12px rgba(168,4,4,0.25)'
-      }}>
-        <div className="max-w-[1400px] mx-auto flex items-center justify-between flex-wrap gap-3">
-          <div className="flex items-center gap-3">
-            <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#fff6ea', animation: 'pulse 1.2s infinite' }} />
-            <div>
-              <div className="font-bebas tracking-widest text-xs opacity-90">TRACKING TIME FOR</div>
-              <div className="font-display text-xl font-semibold leading-tight">{selected.name}</div>
-            </div>
-          </div>
-          <div className="font-bebas text-[11px] tracking-widest opacity-90">TIMER RUNNING</div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="sticky top-[73px] z-30 mb-6" style={{

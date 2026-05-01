@@ -6,6 +6,7 @@ import { BRAND } from '../lib/constants';
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -26,27 +27,66 @@ export default function LoginPage() {
         <div className="panel relative overflow-hidden p-10" style={{ boxShadow: '0 30px 60px -20px rgba(35,35,35,0.25)' }}>
           <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: 'linear-gradient(90deg, var(--ink), var(--crimson), var(--ink))' }} />
 
-          <div className="flex items-center gap-3 mb-6">
-            <Logo className="w-14 h-14" />
-            <div>
-              <div className="font-bebas text-2xl tracking-widest text-ink leading-none">808 TALENT SOURCE</div>
-              <div className="font-display italic text-sm text-slate808 mt-1">Time Tracker & Operations</div>
-            </div>
+          {/* Full logo lockup centered above the form */}
+          <div className="flex flex-col items-center mb-6">
+            <Logo variant="full" size={60} />
+            <div className="font-display italic text-sm text-slate808 mt-3">Time Tracker & Operations</div>
           </div>
 
-          <h1 className="font-display text-3xl font-semibold text-ink">Welcome back</h1>
-          <p className="text-slate808 text-sm mt-2 mb-6 leading-relaxed">Sign in with your 808-issued credentials.</p>
+          <h1 className="font-display text-3xl font-semibold text-ink text-center">Welcome back</h1>
+          <p className="text-slate808 text-sm mt-2 mb-6 leading-relaxed text-center">Sign in with your 808-issued credentials.</p>
 
           <form onSubmit={handleSubmit}>
             <div className="mb-4">
               <label className="field-label">Email</label>
-              <input className="input" type="email" placeholder="you@example.com" autoComplete="username"
-                value={email} onChange={e => setEmail(e.target.value)} required />
+              <input
+                className="input"
+                type="email"
+                placeholder="you@example.com"
+                autoComplete="username"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                required
+              />
             </div>
+
             <div className="mb-4">
               <label className="field-label">Password</label>
-              <input className="input" type="password" placeholder="Your password" autoComplete="current-password"
-                value={password} onChange={e => setPassword(e.target.value)} required />
+              <div style={{ position: 'relative' }}>
+                <input
+                  className="input"
+                  type={showPassword ? 'text' : 'password'}
+                  placeholder="Your password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  style={{ paddingRight: 60 }}
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(v => !v)}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  style={{
+                    position: 'absolute',
+                    right: 8,
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'var(--slate)',
+                    fontFamily: 'Bebas Neue, Impact, sans-serif',
+                    fontSize: 11,
+                    letterSpacing: '0.16em',
+                    cursor: 'pointer',
+                    padding: '4px 8px'
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.color = 'var(--crimson)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.color = 'var(--slate)'; }}
+                >
+                  {showPassword ? 'HIDE' : 'SHOW'}
+                </button>
+              </div>
             </div>
 
             {error && (
